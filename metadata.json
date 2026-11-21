@@ -1,0 +1,8 @@
+{
+  "name": "سامانه برآورد و مدیریت هزینه‌های ساخت",
+  "description": "سامانه مدیریت هزینه‌های ساخت، ثبت دستی و اکسل، دسته‌بندی منعطف و نسخه‌گذاری قیمت روز پروژه‌های ساختمانی",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
