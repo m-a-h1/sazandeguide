@@ -1,47 +1,32 @@
-import { connectToDatabase, DatabaseConfigError } from '../lib/mongodb';
-import {
-  DEFAULT_CATEGORIES_TEMPLATE,
-  PDF_SAMPLE_AUDIT_NOTE,
-  PDF_SAMPLE_EXPENSES,
-} from '../data/pdfSeed';
-import { getNextSequence, getNextSequenceRange } from '../models/Counter';
-import { CategoryModel, type CategoryDoc } from '../models/Category';
-import { ExpenseModel, type ExpenseDoc } from '../models/Expense';
-import {
-  PricingVersionModel,
-  type PricingVersionDoc,
-} from '../models/PricingVersion';
-import { ProjectModel, type ProjectDoc } from '../models/Project';
-import type { VersionItemSnapshot } from '../types/app';
+import { DEFAULT_CATEGORIES_TEMPLATE, PDF_SAMPLE_AUDIT_NOTE, PDF_SAMPLE_EXPENSES } from "../data/pdfSeed";
+import { connectToDatabase, DatabaseConfigError } from "../lib/mongodb";
+import { CategoryModel, type CategoryDoc } from "../models/Category";
+import { getNextSequence, getNextSequenceRange } from "../models/Counter";
+import { ExpenseModel, type ExpenseDoc } from "../models/Expense";
+import { PricingVersionModel, type PricingVersionDoc } from "../models/PricingVersion";
+import { ProjectModel, type ProjectDoc } from "../models/Project";
+import type { VersionItemSnapshot } from "../types/app";
 
 function sanitizeDbError(context: string, error: unknown): Error {
   if (error instanceof DatabaseConfigError) {
     return error;
   }
   console.error(`Database error in ${context}:`, error);
-  return new Error('خطا در ارتباط با پایگاه داده. لطفاً دوباره تلاش کنید.', {
+  return new Error("خطا در ارتباط با پایگاه داده. لطفاً دوباره تلاش کنید.", {
     cause: error,
   });
 }
 
-export function sanitizeRateRecord(
-  input: unknown
-): Record<string, number> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+export function sanitizeRateRecord(input: unknown): Record<string, number> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
     return {};
   }
   const clean: Record<string, number> = {};
   for (const [key, val] of Object.entries(input)) {
-    if (
-      !key ||
-      key.startsWith('$') ||
-      key === '__proto__' ||
-      key === 'constructor' ||
-      key === 'prototype'
-    ) {
+    if (!key || key.startsWith("$") || key === "__proto__" || key === "constructor" || key === "prototype") {
       continue;
     }
-    if (typeof val === 'number' && Number.isFinite(val)) {
+    if (typeof val === "number" && Number.isFinite(val)) {
       clean[key] = val;
     }
   }
@@ -53,24 +38,20 @@ function serializeProject(doc: ProjectDoc) {
     id: doc.id,
     userId: doc.userId,
     name: doc.name,
-    address: doc.address ?? '',
-    description: doc.description ?? '',
-    areaSqm: typeof doc.areaSqm === 'number' ? doc.areaSqm : null,
-    usefulAreaSqm:
-      typeof doc.usefulAreaSqm === 'number' ? doc.usefulAreaSqm : null,
-    floors: typeof doc.floors === 'number' ? doc.floors : null,
-    units: typeof doc.units === 'number' ? doc.units : null,
-    startDateJalali: doc.startDateJalali ?? '',
-    endDateJalali: doc.endDateJalali ?? '',
-    status: doc.status ?? 'در حال ساخت',
-    currency: doc.currency ?? 'تعیین‌نشده',
-    taxPercent: typeof doc.taxPercent === 'number' ? doc.taxPercent : 0,
-    landPrice: typeof doc.landPrice === 'number' ? doc.landPrice : 0,
-    partnershipPercent:
-      typeof doc.partnershipPercent === 'number'
-        ? doc.partnershipPercent
-        : null,
-    pdfAuditNote: doc.pdfAuditNote ?? '',
+    address: doc.address ?? "",
+    description: doc.description ?? "",
+    areaSqm: typeof doc.areaSqm === "number" ? doc.areaSqm : null,
+    usefulAreaSqm: typeof doc.usefulAreaSqm === "number" ? doc.usefulAreaSqm : null,
+    floors: typeof doc.floors === "number" ? doc.floors : null,
+    units: typeof doc.units === "number" ? doc.units : null,
+    startDateJalali: doc.startDateJalali ?? "",
+    endDateJalali: doc.endDateJalali ?? "",
+    status: doc.status ?? "در حال ساخت",
+    currency: doc.currency ?? "تعیین‌نشده",
+    taxPercent: typeof doc.taxPercent === "number" ? doc.taxPercent : 0,
+    landPrice: typeof doc.landPrice === "number" ? doc.landPrice : 0,
+    partnershipPercent: typeof doc.partnershipPercent === "number" ? doc.partnershipPercent : null,
+    pdfAuditNote: doc.pdfAuditNote ?? "",
     draftCategoryRates: sanitizeRateRecord(doc.draftCategoryRates),
     createdAt: doc.createdAt ? new Date(doc.createdAt).toISOString() : undefined,
     updatedAt: doc.updatedAt ? new Date(doc.updatedAt).toISOString() : undefined,
@@ -82,7 +63,7 @@ function serializeCategory(doc: CategoryDoc) {
     id: doc.id,
     projectId: doc.projectId,
     name: doc.name,
-    sortOrder: typeof doc.sortOrder === 'number' ? doc.sortOrder : 0,
+    sortOrder: typeof doc.sortOrder === "number" ? doc.sortOrder : 0,
     subcategories: Array.isArray(doc.subcategories) ? doc.subcategories : [],
   };
 }
@@ -91,15 +72,14 @@ function serializeExpense(doc: ExpenseDoc) {
   return {
     id: doc.id,
     projectId: doc.projectId,
-    categoryId: typeof doc.categoryId === 'number' ? doc.categoryId : null,
+    categoryId: typeof doc.categoryId === "number" ? doc.categoryId : null,
     categoryName: doc.categoryName,
-    subcategory: doc.subcategory ?? '',
+    subcategory: doc.subcategory ?? "",
     dateJalali: doc.dateJalali,
     title: doc.title,
     baseAmount: doc.baseAmount,
-    overridePercent:
-      typeof doc.overridePercent === 'number' ? doc.overridePercent : null,
-    source: doc.source ?? 'دستی',
+    overridePercent: typeof doc.overridePercent === "number" ? doc.overridePercent : null,
+    source: doc.source ?? "دستی",
   };
 }
 
@@ -109,21 +89,14 @@ function serializeVersion(doc: PricingVersionDoc) {
     projectId: doc.projectId,
     name: doc.name,
     versionDateJalali: doc.versionDateJalali,
-    description: doc.description ?? '',
-    baseReferenceType:
-      doc.baseReferenceType === 'VERSION' ? 'VERSION' : 'BASE',
-    parentVersionId:
-      typeof doc.parentVersionId === 'number' ? doc.parentVersionId : null,
+    description: doc.description ?? "",
+    baseReferenceType: doc.baseReferenceType === "VERSION" ? "VERSION" : "BASE",
+    parentVersionId: typeof doc.parentVersionId === "number" ? doc.parentVersionId : null,
     parentVersionName: doc.parentVersionName ?? null,
     categoryRatesSnapshot: sanitizeRateRecord(doc.categoryRatesSnapshot),
-    taxPercentSnapshot:
-      typeof doc.taxPercentSnapshot === 'number' ? doc.taxPercentSnapshot : 0,
-    landPriceSnapshot:
-      typeof doc.landPriceSnapshot === 'number' ? doc.landPriceSnapshot : 0,
-    partnershipPercentSnapshot:
-      typeof doc.partnershipPercentSnapshot === 'number'
-        ? doc.partnershipPercentSnapshot
-        : null,
+    taxPercentSnapshot: typeof doc.taxPercentSnapshot === "number" ? doc.taxPercentSnapshot : 0,
+    landPriceSnapshot: typeof doc.landPriceSnapshot === "number" ? doc.landPriceSnapshot : 0,
+    partnershipPercentSnapshot: typeof doc.partnershipPercentSnapshot === "number" ? doc.partnershipPercentSnapshot : null,
     totalBaseAmount: doc.totalBaseAmount,
     totalReferenceAmount: doc.totalReferenceAmount,
     totalEstimatedAmount: doc.totalEstimatedAmount,
@@ -144,27 +117,24 @@ export async function getOrSeedUserWorkspace(userId: number) {
   try {
     await connectToDatabase();
 
-    let userProjects = await ProjectModel.find({ userId })
-      .sort({ id: 1 })
-      .lean();
+    let userProjects = await ProjectModel.find({ userId }).sort({ id: 1 }).lean();
 
     if (userProjects.length === 0) {
-      const projectId = await getNextSequence('projects');
+      const projectId = await getNextSequence("projects");
       await ProjectModel.create({
         id: projectId,
         userId,
-        name: 'گروه مهندسی مفخم ۱۲ - صیاد ۵',
-        address: 'بلوار صیاد شیرازی (دادهٔ نمونه از گزارش پی‌دی‌اف)',
-        description:
-          'پروژهٔ نمونه بارگذاری‌شده از گزارش هزینه‌ها به تاریخ ۱۴۰۵/۰۷/۲۷. مبالغ پایه دقیقاً مطابق سند اولیه حفظ شده‌اند و قابل ویرایش هستند.',
+        name: "پروژه ی تستی",
+        address: "بلوار فردوسی (دادهٔ نمونه از گزارش پی‌دی‌اف)",
+        description: "",
         areaSqm: null,
         usefulAreaSqm: null,
         floors: null,
         units: null,
-        startDateJalali: '1405/07/27',
-        endDateJalali: '',
-        status: 'در حال ساخت',
-        currency: 'تعیین‌نشده',
+        startDateJalali: "1405/07/27",
+        endDateJalali: "",
+        status: "در حال ساخت",
+        currency: "تعیین‌نشده",
         taxPercent: 0,
         landPrice: 0,
         partnershipPercent: null,
@@ -172,10 +142,7 @@ export async function getOrSeedUserWorkspace(userId: number) {
         draftCategoryRates: {},
       });
 
-      const catStartId = await getNextSequenceRange(
-        'categories',
-        DEFAULT_CATEGORIES_TEMPLATE.length
-      );
+      const catStartId = await getNextSequenceRange("categories", DEFAULT_CATEGORIES_TEMPLATE.length);
       const insertedCategories = await CategoryModel.insertMany(
         DEFAULT_CATEGORIES_TEMPLATE.map((c, idx) => ({
           id: catStartId + idx,
@@ -183,17 +150,12 @@ export async function getOrSeedUserWorkspace(userId: number) {
           name: c.name,
           sortOrder: c.sortOrder,
           subcategories: [...c.subcategories],
-        }))
+        })),
       );
 
-      const catIdMap = new Map(
-        insertedCategories.map((c) => [c.name, c.id])
-      );
+      const catIdMap = new Map(insertedCategories.map((c) => [c.name, c.id]));
 
-      const expStartId = await getNextSequenceRange(
-        'expenses',
-        PDF_SAMPLE_EXPENSES.length
-      );
+      const expStartId = await getNextSequenceRange("expenses", PDF_SAMPLE_EXPENSES.length);
       await ExpenseModel.insertMany(
         PDF_SAMPLE_EXPENSES.map((item, idx) => ({
           id: expStartId + idx,
@@ -205,13 +167,11 @@ export async function getOrSeedUserWorkspace(userId: number) {
           title: item.title,
           baseAmount: item.baseAmount,
           overridePercent: null,
-          source: 'نمونه',
-        }))
+          source: "نمونه",
+        })),
       );
 
-      userProjects = await ProjectModel.find({ userId })
-        .sort({ id: 1 })
-        .lean();
+      userProjects = await ProjectModel.find({ userId }).sort({ id: 1 }).lean();
     }
 
     const projectIds = userProjects.map((p) => p.id);
@@ -238,7 +198,7 @@ export async function getOrSeedUserWorkspace(userId: number) {
       versions: allVersions.map(serializeVersion),
     };
   } catch (error) {
-    throw sanitizeDbError('getOrSeedUserWorkspace', error);
+    throw sanitizeDbError("getOrSeedUserWorkspace", error);
   }
 }
 
@@ -259,37 +219,34 @@ export async function createProjectForUser(
     taxPercent?: number;
     landPrice?: number;
     partnershipPercent?: number | null;
-  }
+  },
 ) {
   try {
     await connectToDatabase();
 
-    const projectId = await getNextSequence('projects');
+    const projectId = await getNextSequence("projects");
     const createdDoc = await ProjectModel.create({
       id: projectId,
       userId,
       name: data.name,
-      address: data.address ?? '',
-      description: data.description ?? '',
+      address: data.address ?? "",
+      description: data.description ?? "",
       areaSqm: data.areaSqm ?? null,
       usefulAreaSqm: data.usefulAreaSqm ?? null,
       floors: data.floors ?? null,
       units: data.units ?? null,
-      startDateJalali: data.startDateJalali ?? '',
-      endDateJalali: data.endDateJalali ?? '',
-      status: data.status ?? 'در حال ساخت',
-      currency: data.currency ?? 'تومان',
+      startDateJalali: data.startDateJalali ?? "",
+      endDateJalali: data.endDateJalali ?? "",
+      status: data.status ?? "در حال ساخت",
+      currency: data.currency ?? "تومان",
       taxPercent: data.taxPercent ?? 0,
       landPrice: data.landPrice ?? 0,
       partnershipPercent: data.partnershipPercent ?? null,
-      pdfAuditNote: '',
+      pdfAuditNote: "",
       draftCategoryRates: {},
     });
 
-    const catStartId = await getNextSequenceRange(
-      'categories',
-      DEFAULT_CATEGORIES_TEMPLATE.length
-    );
+    const catStartId = await getNextSequenceRange("categories", DEFAULT_CATEGORIES_TEMPLATE.length);
     const insertedCats = await CategoryModel.insertMany(
       DEFAULT_CATEGORIES_TEMPLATE.map((c, idx) => ({
         id: catStartId + idx,
@@ -297,7 +254,7 @@ export async function createProjectForUser(
         name: c.name,
         sortOrder: c.sortOrder,
         subcategories: [...c.subcategories],
-      }))
+      })),
     );
 
     return {
@@ -305,7 +262,7 @@ export async function createProjectForUser(
       categories: insertedCats.map((c) => serializeCategory(c.toObject())),
     };
   } catch (error) {
-    throw sanitizeDbError('createProjectForUser', error);
+    throw sanitizeDbError("createProjectForUser", error);
   }
 }
 
@@ -328,7 +285,7 @@ export async function updateProjectForUser(
     landPrice: number;
     partnershipPercent: number | null;
     draftCategoryRates: Record<string, number>;
-  }>
+  }>,
 ) {
   try {
     await connectToDatabase();
@@ -341,15 +298,11 @@ export async function updateProjectForUser(
       cleanData.draftCategoryRates = sanitizeRateRecord(data.draftCategoryRates);
     }
 
-    const updated = await ProjectModel.findOneAndUpdate(
-      { id: projectId, userId },
-      { $set: cleanData },
-      { returnDocument: 'after' }
-    ).lean();
+    const updated = await ProjectModel.findOneAndUpdate({ id: projectId, userId }, { $set: cleanData }, { returnDocument: "after" }).lean();
 
     return updated ? serializeProject(updated) : null;
   } catch (error) {
-    throw sanitizeDbError('updateProjectForUser', error);
+    throw sanitizeDbError("updateProjectForUser", error);
   }
 }
 
@@ -369,14 +322,14 @@ export async function deleteProjectForUser(userId: number, projectId: number) {
 
     return true;
   } catch (error) {
-    throw sanitizeDbError('deleteProjectForUser', error);
+    throw sanitizeDbError("deleteProjectForUser", error);
   }
 }
 
 export async function createCategoryForProject(
   userId: number,
   projectId: number,
-  data: { name: string; subcategories?: string[]; sortOrder?: number }
+  data: { name: string; subcategories?: string[]; sortOrder?: number },
 ) {
   try {
     await connectToDatabase();
@@ -386,7 +339,7 @@ export async function createCategoryForProject(
 
     const existing = await CategoryModel.find({ projectId }).lean();
     const maxOrder = existing.reduce((m, c) => Math.max(m, c.sortOrder), 0);
-    const id = await getNextSequence('categories');
+    const id = await getNextSequence("categories");
 
     const created = await CategoryModel.create({
       id,
@@ -398,7 +351,7 @@ export async function createCategoryForProject(
 
     return serializeCategory(created.toObject());
   } catch (error) {
-    throw sanitizeDbError('createCategoryForProject', error);
+    throw sanitizeDbError("createCategoryForProject", error);
   }
 }
 
@@ -406,7 +359,7 @@ export async function updateCategoryForProject(
   userId: number,
   projectId: number,
   categoryId: number,
-  data: Partial<{ name: string; subcategories: string[]; sortOrder: number }>
+  data: Partial<{ name: string; subcategories: string[]; sortOrder: number }>,
 ) {
   try {
     await connectToDatabase();
@@ -420,42 +373,28 @@ export async function updateCategoryForProject(
     }).lean();
     if (!oldCat) return null;
 
-    const updated = await CategoryModel.findOneAndUpdate(
-      { id: categoryId, projectId },
-      { $set: data },
-      { returnDocument: 'after' }
-    ).lean();
+    const updated = await CategoryModel.findOneAndUpdate({ id: categoryId, projectId }, { $set: data }, { returnDocument: "after" }).lean();
 
     if (!updated) return null;
 
     if (data.name && data.name !== oldCat.name) {
-      await ExpenseModel.updateMany(
-        { projectId, categoryId },
-        { $set: { categoryName: data.name } }
-      );
+      await ExpenseModel.updateMany({ projectId, categoryId }, { $set: { categoryName: data.name } });
 
       const rates = sanitizeRateRecord(owned.draftCategoryRates);
       if (Object.prototype.hasOwnProperty.call(rates, oldCat.name)) {
         rates[data.name] = rates[oldCat.name];
         delete rates[oldCat.name];
-        await ProjectModel.updateOne(
-          { id: projectId, userId },
-          { $set: { draftCategoryRates: rates } }
-        );
+        await ProjectModel.updateOne({ id: projectId, userId }, { $set: { draftCategoryRates: rates } });
       }
     }
 
     return serializeCategory(updated);
   } catch (error) {
-    throw sanitizeDbError('updateCategoryForProject', error);
+    throw sanitizeDbError("updateCategoryForProject", error);
   }
 }
 
-export async function reorderCategoriesForProject(
-  userId: number,
-  projectId: number,
-  orderedIds: number[]
-) {
+export async function reorderCategoriesForProject(userId: number, projectId: number, orderedIds: number[]) {
   try {
     await connectToDatabase();
 
@@ -469,22 +408,17 @@ export async function reorderCategoriesForProject(
             filter: { id: catId, projectId },
             update: { $set: { sortOrder: idx + 1 } },
           },
-        }))
+        })),
       );
     }
 
     return true;
   } catch (error) {
-    throw sanitizeDbError('reorderCategoriesForProject', error);
+    throw sanitizeDbError("reorderCategoriesForProject", error);
   }
 }
 
-export async function deleteCategoryForProject(
-  userId: number,
-  projectId: number,
-  categoryId: number,
-  targetCategoryId: number | null
-) {
+export async function deleteCategoryForProject(userId: number, projectId: number, categoryId: number, targetCategoryId: number | null) {
   try {
     await connectToDatabase();
 
@@ -504,20 +438,17 @@ export async function deleteCategoryForProject(
               categoryId: targetCat.id,
               categoryName: targetCat.name,
             },
-          }
+          },
         );
       }
     } else {
-      await ExpenseModel.updateMany(
-        { projectId, categoryId },
-        { $set: { categoryId: null } }
-      );
+      await ExpenseModel.updateMany({ projectId, categoryId }, { $set: { categoryId: null } });
     }
 
     await CategoryModel.deleteOne({ id: categoryId, projectId });
     return true;
   } catch (error) {
-    throw sanitizeDbError('deleteCategoryForProject', error);
+    throw sanitizeDbError("deleteCategoryForProject", error);
   }
 }
 
@@ -533,7 +464,7 @@ export async function createExpensesForProject(
     overridePercent?: number | null;
     source: string;
   }>,
-  mode: 'append' | 'replace' = 'append'
+  mode: "append" | "replace" = "append",
 ) {
   try {
     await connectToDatabase();
@@ -541,24 +472,19 @@ export async function createExpensesForProject(
     const owned = await assertProjectOwnership(projectId, userId);
     if (!owned) return null;
 
-    if (mode === 'replace') {
+    if (mode === "replace") {
       await ExpenseModel.deleteMany({ projectId });
     }
 
     const existingCats = await CategoryModel.find({ projectId }).lean();
-    const catByName = new Map<string, CategoryDoc>(
-      existingCats.map((c) => [c.name, c])
-    );
-    let maxOrder = existingCats.reduce(
-      (m, c) => Math.max(m, c.sortOrder),
-      0
-    );
+    const catByName = new Map<string, CategoryDoc>(existingCats.map((c) => [c.name, c]));
+    let maxOrder = existingCats.reduce((m, c) => Math.max(m, c.sortOrder), 0);
 
     for (const item of items) {
       let cat = catByName.get(item.categoryName);
       if (!cat) {
         maxOrder += 1;
-        const catId = await getNextSequence('categories');
+        const catId = await getNextSequence("categories");
         const created = await CategoryModel.create({
           id: catId,
           projectId,
@@ -568,15 +494,12 @@ export async function createExpensesForProject(
         });
         cat = created.toObject();
         catByName.set(cat.name, cat);
-      } else if (
-        item.subcategory &&
-        !cat.subcategories.includes(item.subcategory)
-      ) {
+      } else if (item.subcategory && !cat.subcategories.includes(item.subcategory)) {
         const updatedSubs = [...cat.subcategories, item.subcategory];
         const updatedCat = await CategoryModel.findOneAndUpdate(
           { id: cat.id, projectId },
           { $set: { subcategories: updatedSubs } },
-          { returnDocument: 'after' }
+          { returnDocument: "after" },
         ).lean();
         if (updatedCat) {
           cat = updatedCat;
@@ -585,32 +508,30 @@ export async function createExpensesForProject(
       }
     }
 
-    const expStartId = await getNextSequenceRange('expenses', items.length);
+    const expStartId = await getNextSequenceRange("expenses", items.length);
     const inserted = await ExpenseModel.insertMany(
       items.map((item, idx) => ({
         id: expStartId + idx,
         projectId,
         categoryId: catByName.get(item.categoryName)?.id ?? null,
         categoryName: item.categoryName,
-        subcategory: item.subcategory ?? '',
+        subcategory: item.subcategory ?? "",
         dateJalali: item.dateJalali,
         title: item.title,
         baseAmount: item.baseAmount,
         overridePercent: item.overridePercent ?? null,
         source: item.source,
-      }))
+      })),
     );
 
-    const updatedCats = await CategoryModel.find({ projectId })
-      .sort({ sortOrder: 1, id: 1 })
-      .lean();
+    const updatedCats = await CategoryModel.find({ projectId }).sort({ sortOrder: 1, id: 1 }).lean();
 
     return {
       inserted: inserted.map((e) => serializeExpense(e.toObject())),
       categories: updatedCats.map(serializeCategory),
     };
   } catch (error) {
-    throw sanitizeDbError('createExpensesForProject', error);
+    throw sanitizeDbError("createExpensesForProject", error);
   }
 }
 
@@ -626,7 +547,7 @@ export async function updateExpenseForProject(
     title: string;
     baseAmount: number;
     overridePercent: number | null;
-  }>
+  }>,
 ) {
   try {
     await connectToDatabase();
@@ -634,15 +555,11 @@ export async function updateExpenseForProject(
     const owned = await assertProjectOwnership(projectId, userId);
     if (!owned) return null;
 
-    const updated = await ExpenseModel.findOneAndUpdate(
-      { id: expenseId, projectId },
-      { $set: data },
-      { returnDocument: 'after' }
-    ).lean();
+    const updated = await ExpenseModel.findOneAndUpdate({ id: expenseId, projectId }, { $set: data }, { returnDocument: "after" }).lean();
 
     return updated ? serializeExpense(updated) : null;
   } catch (error) {
-    throw sanitizeDbError('updateExpenseForProject', error);
+    throw sanitizeDbError("updateExpenseForProject", error);
   }
 }
 
@@ -651,7 +568,7 @@ export async function bulkSetSubcategoryOverrideForProject(
   projectId: number,
   categoryName: string,
   subcategory: string,
-  overridePercent: number | null
+  overridePercent: number | null,
 ) {
   try {
     await connectToDatabase();
@@ -659,10 +576,7 @@ export async function bulkSetSubcategoryOverrideForProject(
     const owned = await assertProjectOwnership(projectId, userId);
     if (!owned) return null;
 
-    await ExpenseModel.updateMany(
-      { projectId, categoryName, subcategory },
-      { $set: { overridePercent } }
-    );
+    await ExpenseModel.updateMany({ projectId, categoryName, subcategory }, { $set: { overridePercent } });
 
     const updated = await ExpenseModel.find({
       projectId,
@@ -674,15 +588,11 @@ export async function bulkSetSubcategoryOverrideForProject(
 
     return updated.map(serializeExpense);
   } catch (error) {
-    throw sanitizeDbError('bulkSetSubcategoryOverrideForProject', error);
+    throw sanitizeDbError("bulkSetSubcategoryOverrideForProject", error);
   }
 }
 
-export async function deleteExpenseForProject(
-  userId: number,
-  projectId: number,
-  expenseId: number
-) {
+export async function deleteExpenseForProject(userId: number, projectId: number, expenseId: number) {
   try {
     await connectToDatabase();
 
@@ -692,7 +602,7 @@ export async function deleteExpenseForProject(
     const res = await ExpenseModel.deleteOne({ id: expenseId, projectId });
     return res.deletedCount > 0;
   } catch (error) {
-    throw sanitizeDbError('deleteExpenseForProject', error);
+    throw sanitizeDbError("deleteExpenseForProject", error);
   }
 }
 
@@ -703,7 +613,7 @@ export async function createPricingVersionForProject(
     name: string;
     versionDateJalali: string;
     description: string;
-    baseReferenceType: 'BASE' | 'VERSION';
+    baseReferenceType: "BASE" | "VERSION";
     parentVersionId: number | null;
     parentVersionName: string | null;
     categoryRatesSnapshot: Record<string, number>;
@@ -716,7 +626,7 @@ export async function createPricingVersionForProject(
     diffFromBaseAmount: number;
     diffFromBasePercent: number;
     itemsSnapshot: VersionItemSnapshot[];
-  }
+  },
 ) {
   try {
     await connectToDatabase();
@@ -724,7 +634,7 @@ export async function createPricingVersionForProject(
     const owned = await assertProjectOwnership(projectId, userId);
     if (!owned) return null;
 
-    const id = await getNextSequence('pricingVersions');
+    const id = await getNextSequence("pricingVersions");
     const created = await PricingVersionModel.create({
       id,
       projectId,
@@ -734,7 +644,7 @@ export async function createPricingVersionForProject(
 
     return serializeVersion(created.toObject());
   } catch (error) {
-    throw sanitizeDbError('createPricingVersionForProject', error);
+    throw sanitizeDbError("createPricingVersionForProject", error);
   }
 }
 
@@ -742,7 +652,7 @@ export async function updatePricingVersionMetaForProject(
   userId: number,
   projectId: number,
   versionId: number,
-  data: { name: string; versionDateJalali: string; description: string }
+  data: { name: string; versionDateJalali: string; description: string },
 ) {
   try {
     await connectToDatabase();
@@ -759,20 +669,16 @@ export async function updatePricingVersionMetaForProject(
           description: data.description,
         },
       },
-      { returnDocument: 'after' }
+      { returnDocument: "after" },
     ).lean();
 
     return updated ? serializeVersion(updated) : null;
   } catch (error) {
-    throw sanitizeDbError('updatePricingVersionMetaForProject', error);
+    throw sanitizeDbError("updatePricingVersionMetaForProject", error);
   }
 }
 
-export async function deletePricingVersionForProject(
-  userId: number,
-  projectId: number,
-  versionId: number
-) {
+export async function deletePricingVersionForProject(userId: number, projectId: number, versionId: number) {
   try {
     await connectToDatabase();
 
@@ -785,6 +691,6 @@ export async function deletePricingVersionForProject(
     });
     return res.deletedCount > 0;
   } catch (error) {
-    throw sanitizeDbError('deletePricingVersionForProject', error);
+    throw sanitizeDbError("deletePricingVersionForProject", error);
   }
 }
