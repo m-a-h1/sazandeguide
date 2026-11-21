@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useEffect, useState } from 'react';
 import { Sparkles, X } from 'lucide-react';
 import type { CategoryItem, ExpenseItem, ProjectCurrency } from '../types/app';

@@ -1,18 +1,20 @@
-import React, { useState } from 'react';
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Building2,
   FolderKanban,
   GitCompare,
   HardDrive,
   LayoutDashboard,
-  LogIn,
   LogOut,
   Menu,
   Plus,
   ReceiptText,
   X,
 } from 'lucide-react';
-import { AuthProvider, useAuth } from './context/AuthContext';
+import { AuthProvider, useAuth, type AuthUser } from './context/AuthContext';
 import { WorkspaceProvider, useWorkspace } from './context/WorkspaceContext';
 import type { AppSection, ExpenseItem, Project } from './types/app';
 import { DashboardView } from './components/DashboardView';
@@ -38,8 +40,8 @@ const NAV_ITEMS: Array<{
 ];
 
 function MainWorkspaceShell() {
-  const { user, authError, signInWithGoogle, signOutUser, clearAuthError } =
-    useAuth();
+  const router = useRouter();
+  const { user, authError, logout, clearAuthError } = useAuth();
   const {
     projects,
     activeProject,
@@ -60,7 +62,6 @@ function MainWorkspaceShell() {
   const [section, setSection] = useState<AppSection>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Modals
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
 
@@ -79,7 +80,6 @@ function MainWorkspaceShell() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col lg:flex-row">
-      {/* Mobile overlay */}
       {mobileMenuOpen && (
         <div
           className="fixed inset-0 z-40 bg-slate-900/40 lg:hidden"
@@ -167,7 +167,7 @@ function MainWorkspaceShell() {
           })}
         </nav>
 
-        {/* Storage Status & Account Section */}
+        {/* Storage Status & Builder Account */}
         <div className="border-t border-slate-200 p-4 space-y-3 text-xs">
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1.5">
             <div className="flex items-center gap-1.5 font-semibold text-slate-800">
@@ -176,12 +176,7 @@ function MainWorkspaceShell() {
             </div>
             {storageMode === 'cloud' && (
               <p className="leading-5 text-emerald-800">
-                متصل به پایگاه دادهٔ ابری؛ همهٔ تغییرات به‌صورت خودکار ذخیره می‌شوند.
-              </p>
-            )}
-            {storageMode === 'local' && (
-              <p className="leading-5 text-amber-800">
-                ذخیرهٔ موقت در نشست مرورگر فعال است. برای ذخیرهٔ دائمی در پایگاه داده، وارد حساب گوگل شوید.
+                متصل به پایگاه داده؛ همهٔ اطلاعات به‌صورت خودکار ذخیره می‌شوند.
               </p>
             )}
             {storageMode === 'loading' && (
@@ -191,46 +186,39 @@ function MainWorkspaceShell() {
             )}
             {storageMode === 'error' && (
               <p className="leading-5 text-red-700">
-                دسترسی به پایگاه داده با خطا روبه‌رو شد؛ داده‌ها موقتاً در مرورگر نگهداری می‌شوند.
+                دسترسی به پایگاه داده با خطا روبه‌رو شد.
               </p>
             )}
           </div>
 
-          {user ? (
+          {user && (
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="truncate font-semibold text-slate-800">
-                  {user.displayName || 'کاربر سامانه'}
+                  {user.displayName}
                 </div>
                 <div className="truncate text-[11px] text-slate-500">
-                  حساب متصل
+                  حساب سازنده ({user.username})
                 </div>
               </div>
               <button
                 type="button"
-                onClick={signOutUser}
+                onClick={async () => {
+                  await logout();
+                  router.replace('/');
+                }}
                 className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0"
               >
                 <LogOut className="h-3.5 w-3.5" />
                 خروج
               </button>
             </div>
-          ) : (
-            <button
-              type="button"
-              onClick={signInWithGoogle}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50"
-            >
-              <LogIn className="h-3.5 w-3.5" />
-              ورود با حساب گوگل
-            </button>
           )}
         </div>
       </aside>
 
       {/* Main Content Area */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Top Bar Contract: 3 clean zones */}
         <header className="sticky top-0 z-30 flex items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -262,7 +250,6 @@ function MainWorkspaceShell() {
           </div>
         </header>
 
-        {/* Global Error Banners */}
         {(storageError || authError) && (
           <div className="mx-4 mt-4 space-y-2 sm:mx-6">
             {storageError && (
@@ -292,7 +279,6 @@ function MainWorkspaceShell() {
           </div>
         )}
 
-        {/* Active Section Viewport */}
         <main className="mx-auto w-full max-w-[1320px] flex-1 p-4 sm:p-6">
           {section === 'dashboard' && (
             <DashboardView
@@ -352,7 +338,6 @@ function MainWorkspaceShell() {
         </main>
       </div>
 
-      {/* Shared Modals */}
       <ProjectFormModal
         open={projectModalOpen}
         initialProject={editingProject}
@@ -407,12 +392,56 @@ function MainWorkspaceShell() {
   );
 }
 
-export default function App() {
+function BuilderDashboardGate() {
+  const router = useRouter();
+  const { user, loading } = useAuth();
+
+  useEffect(() => {
+    if (!loading && (!user || user.role !== 'builder')) {
+      router.replace('/');
+    }
+  }, [loading, user, router]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="rounded-xl border border-slate-200 bg-white px-6 py-4 text-sm font-medium text-slate-700 shadow-sm">
+          در حال بررسی وضعیت نشست کاربری...
+        </div>
+      </div>
+    );
+  }
+
+  if (!user || user.role !== 'builder') {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="rounded-xl border border-slate-200 bg-white px-6 py-4 text-sm font-medium text-slate-700 shadow-sm">
+          در حال انتقال به صفحه ورود...
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <AuthProvider>
-      <WorkspaceProvider>
-        <MainWorkspaceShell />
-      </WorkspaceProvider>
+    <WorkspaceProvider>
+      <MainWorkspaceShell />
+    </WorkspaceProvider>
+  );
+}
+
+export function BuilderDashboardApp({
+  initialUser = null,
+}: {
+  initialUser?: AuthUser | null;
+}) {
+  return (
+    <AuthProvider
+      initialUser={initialUser}
+      initialResolved={Boolean(initialUser)}
+    >
+      <BuilderDashboardGate />
     </AuthProvider>
   );
 }
+
+export default BuilderDashboardApp;

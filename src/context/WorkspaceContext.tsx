@@ -1,3 +1,5 @@
+'use client';
+
 import React, {
   createContext,
   useCallback,
@@ -7,7 +9,6 @@ import React, {
   useState,
 } from 'react';
 import { useAuth } from './AuthContext';
-import { createClientSeedBundle, DEFAULT_CATEGORIES_TEMPLATE } from '../data/pdfSeed';
 import type {
   CategoryItem,
   ExpenseItem,
@@ -24,69 +25,7 @@ import {
   computePerSqm,
 } from '../utils/pricing';
 
-const LOCAL_SESSION_KEY = 'construction_cost_workspace_v1';
-
-interface LocalWorkspaceState {
-  projects: Project[];
-  categories: CategoryItem[];
-  expenses: ExpenseItem[];
-  versions: PricingVersion[];
-  nextId: number;
-}
-
-function loadInitialLocalWorkspace(): LocalWorkspaceState {
-  try {
-    const raw = sessionStorage.getItem(LOCAL_SESSION_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as LocalWorkspaceState;
-      if (Array.isArray(parsed.projects) && parsed.projects.length > 0) {
-        return {
-          ...parsed,
-          projects: parsed.projects.map((p) => ({
-            ...p,
-            usefulAreaSqm:
-              typeof p.usefulAreaSqm === 'number' ? p.usefulAreaSqm : null,
-            taxPercent: typeof p.taxPercent === 'number' ? p.taxPercent : 0,
-            landPrice: typeof p.landPrice === 'number' ? p.landPrice : 0,
-            partnershipPercent:
-              typeof p.partnershipPercent === 'number'
-                ? p.partnershipPercent
-                : null,
-          })),
-          versions: Array.isArray(parsed.versions)
-            ? parsed.versions.map((v) => ({
-                ...v,
-                taxPercentSnapshot:
-                  typeof v.taxPercentSnapshot === 'number'
-                    ? v.taxPercentSnapshot
-                    : 0,
-                landPriceSnapshot:
-                  typeof v.landPriceSnapshot === 'number'
-                    ? v.landPriceSnapshot
-                    : 0,
-                partnershipPercentSnapshot:
-                  typeof v.partnershipPercentSnapshot === 'number'
-                    ? v.partnershipPercentSnapshot
-                    : null,
-              }))
-            : [],
-        };
-      }
-    }
-  } catch {
-    // Fallback to clean seed
-  }
-  const seed = createClientSeedBundle();
-  return {
-    projects: [seed.project],
-    categories: seed.categories,
-    expenses: seed.expenses,
-    versions: [],
-    nextId: 1000,
-  };
-}
-
-export type StorageMode = 'cloud' | 'local' | 'loading' | 'error';
+export type StorageMode = 'cloud' | 'loading' | 'error';
 
 interface WorkspaceContextValue {
   projects: Project[];
@@ -105,7 +44,6 @@ interface WorkspaceContextValue {
   storageError: string | null;
   clearStorageError: () => void;
 
-  // Actions
   createProject: (input: {
     name: string;
     address: string;
@@ -183,7 +121,7 @@ interface WorkspaceContextValue {
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
-  const { user, loading: authLoading, getIdToken } = useAuth();
+  const { user, loading: authLoading } = useAuth();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [categories, setCategories] = useState<CategoryItem[]>([]);
@@ -195,74 +133,32 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   );
   const [storageMode, setStorageMode] = useState<StorageMode>('loading');
   const [storageError, setStorageError] = useState<string | null>(null);
-  const [localNextId, setLocalNextId] = useState<number>(1000);
 
-  const persistLocalSnapshot = useCallback(
-    (
-      nextProjects: Project[],
-      nextCategories: CategoryItem[],
-      nextExpenses: ExpenseItem[],
-      nextVersions: PricingVersion[],
-      nextIdVal: number
-    ) => {
-      try {
-        sessionStorage.setItem(
-          LOCAL_SESSION_KEY,
-          JSON.stringify({
-            projects: nextProjects,
-            categories: nextCategories,
-            expenses: nextExpenses,
-            versions: nextVersions,
-            nextId: nextIdVal,
-          })
-        );
-      } catch {
-        // Ignore storage quota errors
-      }
-    },
-    []
-  );
-
-  const authFetch = useCallback(
-    async (url: string, init?: RequestInit) => {
-      const token = await getIdToken();
-      if (!token) {
-        throw new Error('توکن احراز هویت در دسترس نیست.');
-      }
-      const res = await fetch(url, {
-        ...init,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-          ...(init?.headers ?? {}),
-        },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || 'خطا در ارتباط با سرور.');
-      }
-      return data;
-    },
-    [getIdToken]
-  );
+  const authFetch = useCallback(async (url: string, init?: RequestInit) => {
+    const res = await fetch(url, {
+      ...init,
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'خطا در ارتباط با سرور.');
+    }
+    return data;
+  }, []);
 
   useEffect(() => {
     if (authLoading) return;
-
-    if (!user) {
-      const local = loadInitialLocalWorkspace();
-      setProjects(local.projects);
-      setCategories(local.categories);
-      setExpenses(local.expenses);
-      setVersions(local.versions);
-      setLocalNextId(local.nextId);
-      setActiveProjectId((prev) =>
-        prev && local.projects.some((p) => p.id === prev)
-          ? prev
-          : (local.projects[0]?.id ?? null)
-      );
-      setStorageMode('local');
-      setStorageError(null);
+    if (!user || user.role !== 'builder') {
+      setProjects([]);
+      setCategories([]);
+      setExpenses([]);
+      setVersions([]);
+      setActiveProjectId(null);
+      setStorageMode('loading');
       return;
     }
 
@@ -273,17 +169,19 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     authFetch('/api/workspace')
       .then((data) => {
         if (cancelled) return;
-        const loadedProjects: Project[] = (data.projects ?? []).map((p: Project) => ({
-          ...p,
-          usefulAreaSqm:
-            typeof p.usefulAreaSqm === 'number' ? p.usefulAreaSqm : null,
-          taxPercent: typeof p.taxPercent === 'number' ? p.taxPercent : 0,
-          landPrice: typeof p.landPrice === 'number' ? p.landPrice : 0,
-          partnershipPercent:
-            typeof p.partnershipPercent === 'number'
-              ? p.partnershipPercent
-              : null,
-        }));
+        const loadedProjects: Project[] = (data.projects ?? []).map(
+          (p: Project) => ({
+            ...p,
+            usefulAreaSqm:
+              typeof p.usefulAreaSqm === 'number' ? p.usefulAreaSqm : null,
+            taxPercent: typeof p.taxPercent === 'number' ? p.taxPercent : 0,
+            landPrice: typeof p.landPrice === 'number' ? p.landPrice : 0,
+            partnershipPercent:
+              typeof p.partnershipPercent === 'number'
+                ? p.partnershipPercent
+                : null,
+          })
+        );
         const loadedVersions: PricingVersion[] = (data.versions ?? []).map(
           (v: PricingVersion) => ({
             ...v,
@@ -292,9 +190,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
                 ? v.taxPercentSnapshot
                 : 0,
             landPriceSnapshot:
-              typeof v.landPriceSnapshot === 'number'
-                ? v.landPriceSnapshot
-                : 0,
+              typeof v.landPriceSnapshot === 'number' ? v.landPriceSnapshot : 0,
             partnershipPercentSnapshot:
               typeof v.partnershipPercentSnapshot === 'number'
                 ? v.partnershipPercentSnapshot
@@ -315,19 +211,12 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        console.error('Failed to load cloud workspace:', err);
-        const local = loadInitialLocalWorkspace();
-        setProjects(local.projects);
-        setCategories(local.categories);
-        setExpenses(local.expenses);
-        setVersions(local.versions);
-        setLocalNextId(local.nextId);
-        setActiveProjectId(local.projects[0]?.id ?? null);
+        console.error('Failed to load workspace:', err);
         setStorageMode('error');
         setStorageError(
           err instanceof Error
-            ? `${err.message} (حالت موقت مرورگر فعال شد)`
-            : 'اتصال به پایگاه داده برقرار نشد. حالت موقت مرورگر فعال شد.'
+            ? err.message
+            : 'بارگذاری اطلاعات از پایگاه داده با خطا روبه‌رو شد.'
         );
       });
 
@@ -466,56 +355,26 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     activeProject?.usefulAreaSqm,
   ]);
 
-  const isCloud = storageMode === 'cloud' && Boolean(user);
-
   const createProject: WorkspaceContextValue['createProject'] = async (
     input
   ) => {
     setStorageError(null);
-    if (isCloud) {
-      try {
-        const res = await authFetch('/api/projects', {
-          method: 'POST',
-          body: JSON.stringify(input),
-        });
-        setProjects((prev) => [...prev, res.project]);
-        setCategories((prev) => [...prev, ...(res.categories ?? [])]);
-        setActiveProjectId(res.project.id);
-        setSelectedVersionId('draft');
-        return true;
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'ایجاد پروژه انجام نشد.'
-        );
-        return false;
-      }
+    try {
+      const res = await authFetch('/api/projects', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      setProjects((prev) => [...prev, res.project]);
+      setCategories((prev) => [...prev, ...(res.categories ?? [])]);
+      setActiveProjectId(res.project.id);
+      setSelectedVersionId('draft');
+      return true;
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'ایجاد پروژه انجام نشد.'
+      );
+      return false;
     }
-
-    const newProjId = localNextId;
-    let nextIdCursor = localNextId + 1;
-    const newProject: Project = {
-      id: newProjId,
-      ...input,
-      pdfAuditNote: '',
-      draftCategoryRates: {},
-    };
-    const newCats: CategoryItem[] = DEFAULT_CATEGORIES_TEMPLATE.map((c) => ({
-      id: nextIdCursor++,
-      projectId: newProjId,
-      name: c.name,
-      sortOrder: c.sortOrder,
-      subcategories: [...c.subcategories],
-    }));
-
-    const nextProjects = [...projects, newProject];
-    const nextCats = [...categories, ...newCats];
-    setProjects(nextProjects);
-    setCategories(nextCats);
-    setLocalNextId(nextIdCursor);
-    setActiveProjectId(newProjId);
-    setSelectedVersionId('draft');
-    persistLocalSnapshot(nextProjects, nextCats, expenses, versions, nextIdCursor);
-    return true;
   };
 
   const updateProject: WorkspaceContextValue['updateProject'] = async (
@@ -523,66 +382,44 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     updates
   ) => {
     setStorageError(null);
-    if (isCloud) {
-      try {
-        const updated = await authFetch(`/api/projects/${projectId}`, {
-          method: 'PATCH',
-          body: JSON.stringify(updates),
-        });
-        setProjects((prev) =>
-          prev.map((p) => (p.id === projectId ? updated : p))
-        );
-        return true;
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'ویرایش پروژه انجام نشد.'
-        );
-        return false;
-      }
+    try {
+      const updated = await authFetch(`/api/projects/${projectId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(updates),
+      });
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? updated : p))
+      );
+      return true;
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'ویرایش پروژه انجام نشد.'
+      );
+      return false;
     }
-
-    const nextProjects = projects.map((p) =>
-      p.id === projectId ? { ...p, ...updates } : p
-    );
-    setProjects(nextProjects);
-    persistLocalSnapshot(nextProjects, categories, expenses, versions, localNextId);
-    return true;
   };
 
   const deleteProject: WorkspaceContextValue['deleteProject'] = async (
     projectId
   ) => {
     setStorageError(null);
-    if (isCloud) {
-      try {
-        await authFetch(`/api/projects/${projectId}`, { method: 'DELETE' });
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'حذف پروژه انجام نشد.'
-        );
-        return false;
-      }
+    try {
+      await authFetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'حذف پروژه انجام نشد.'
+      );
+      return false;
     }
+
     const nextProjects = projects.filter((p) => p.id !== projectId);
-    const nextCats = categories.filter((c) => c.projectId !== projectId);
-    const nextExps = expenses.filter((e) => e.projectId !== projectId);
-    const nextVers = versions.filter((v) => v.projectId !== projectId);
     setProjects(nextProjects);
-    setCategories(nextCats);
-    setExpenses(nextExps);
-    setVersions(nextVers);
+    setCategories((prev) => prev.filter((c) => c.projectId !== projectId));
+    setExpenses((prev) => prev.filter((e) => e.projectId !== projectId));
+    setVersions((prev) => prev.filter((v) => v.projectId !== projectId));
     if (activeProjectId === projectId) {
       setActiveProjectId(nextProjects[0]?.id ?? null);
       setSelectedVersionId('draft');
-    }
-    if (!isCloud) {
-      persistLocalSnapshot(
-        nextProjects,
-        nextCats,
-        nextExps,
-        nextVers,
-        localNextId
-      );
     }
     return true;
   };
@@ -606,100 +443,34 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     if (!activeProjectId) return false;
     setStorageError(null);
 
-    if (isCloud) {
-      try {
-        const res = await authFetch(
-          `/api/projects/${activeProjectId}/expenses`,
-          {
-            method: 'POST',
-            body: JSON.stringify({ items, mode }),
-          }
-        );
-        setExpenses((prev) => {
-          const base =
-            mode === 'replace'
-              ? prev.filter((e) => e.projectId !== activeProjectId)
-              : prev;
-          return [...base, ...(res.inserted ?? [])];
-        });
-        if (Array.isArray(res.categories)) {
-          setCategories((prev) => [
-            ...prev.filter((c) => c.projectId !== activeProjectId),
-            ...res.categories,
-          ]);
+    try {
+      const res = await authFetch(
+        `/api/projects/${activeProjectId}/expenses`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ items, mode }),
         }
-        return true;
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'ثبت هزینه‌ها انجام نشد.'
-        );
-        return false;
+      );
+      setExpenses((prev) => {
+        const base =
+          mode === 'replace'
+            ? prev.filter((e) => e.projectId !== activeProjectId)
+            : prev;
+        return [...base, ...(res.inserted ?? [])];
+      });
+      if (Array.isArray(res.categories)) {
+        setCategories((prev) => [
+          ...prev.filter((c) => c.projectId !== activeProjectId),
+          ...res.categories,
+        ]);
       }
+      return true;
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'ثبت هزینه‌ها انجام نشد.'
+      );
+      return false;
     }
-
-    let nextIdCursor = localNextId;
-    let nextCats = [...categories];
-    const projCats = nextCats.filter((c) => c.projectId === activeProjectId);
-    const catByName = new Map(projCats.map((c) => [c.name, c]));
-    let maxSort = projCats.reduce((m, c) => Math.max(m, c.sortOrder), 0);
-
-    for (const item of items) {
-      const existingCat = catByName.get(item.categoryName);
-      if (!existingCat) {
-        const created: CategoryItem = {
-          id: nextIdCursor++,
-          projectId: activeProjectId,
-          name: item.categoryName,
-          sortOrder: ++maxSort,
-          subcategories: item.subcategory ? [item.subcategory] : [],
-        };
-        nextCats.push(created);
-        catByName.set(created.name, created);
-      } else if (
-        item.subcategory &&
-        !existingCat.subcategories.includes(item.subcategory)
-      ) {
-        const updatedCat: CategoryItem = {
-          ...existingCat,
-          subcategories: [...existingCat.subcategories, item.subcategory],
-        };
-        nextCats = nextCats.map((c) =>
-          c.id === updatedCat.id ? updatedCat : c
-        );
-        catByName.set(updatedCat.name, updatedCat);
-      }
-    }
-
-    const newExpenses: ExpenseItem[] = items.map((item) => ({
-      id: nextIdCursor++,
-      projectId: activeProjectId,
-      categoryId: catByName.get(item.categoryName)?.id ?? null,
-      categoryName: item.categoryName,
-      subcategory: item.subcategory,
-      dateJalali: item.dateJalali,
-      title: item.title,
-      baseAmount: item.baseAmount,
-      overridePercent: item.overridePercent ?? null,
-      source: item.source,
-    }));
-
-    const baseExpenses =
-      mode === 'replace'
-        ? expenses.filter((e) => e.projectId !== activeProjectId)
-        : expenses;
-    const nextExpenses = [...baseExpenses, ...newExpenses];
-
-    setCategories(nextCats);
-    setExpenses(nextExpenses);
-    setLocalNextId(nextIdCursor);
-    persistLocalSnapshot(
-      projects,
-      nextCats,
-      nextExpenses,
-      versions,
-      nextIdCursor
-    );
-    return true;
   };
 
   const updateExpense: WorkspaceContextValue['updateExpense'] = async (
@@ -709,39 +480,24 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     if (!activeProjectId) return false;
     setStorageError(null);
 
-    if (isCloud) {
-      try {
-        const updated = await authFetch(
-          `/api/projects/${activeProjectId}/expenses/${expenseId}`,
-          {
-            method: 'PATCH',
-            body: JSON.stringify(updates),
-          }
-        );
-        setExpenses((prev) =>
-          prev.map((e) => (e.id === expenseId ? updated : e))
-        );
-        return true;
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'ویرایش هزینه انجام نشد.'
-        );
-        return false;
-      }
+    try {
+      const updated = await authFetch(
+        `/api/projects/${activeProjectId}/expenses/${expenseId}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(updates),
+        }
+      );
+      setExpenses((prev) =>
+        prev.map((e) => (e.id === expenseId ? updated : e))
+      );
+      return true;
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'ویرایش هزینه انجام نشد.'
+      );
+      return false;
     }
-
-    const nextExpenses = expenses.map((e) =>
-      e.id === expenseId ? { ...e, ...updates } : e
-    );
-    setExpenses(nextExpenses);
-    persistLocalSnapshot(
-      projects,
-      categories,
-      nextExpenses,
-      versions,
-      localNextId
-    );
-    return true;
   };
 
   const setSubcategoryOverride: WorkspaceContextValue['setSubcategoryOverride'] =
@@ -749,44 +505,34 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       if (!activeProjectId) return false;
       setStorageError(null);
 
-      if (isCloud) {
-        try {
-          await authFetch(
-            `/api/projects/${activeProjectId}/expenses/subcategory-override`,
-            {
-              method: 'POST',
-              body: JSON.stringify({
-                categoryName,
-                subcategory,
-                overridePercent,
-              }),
-            }
-          );
-        } catch (err: unknown) {
-          setStorageError(
-            err instanceof Error ? err.message : 'تغییر درصد زیردسته انجام نشد.'
-          );
-          return false;
-        }
+      try {
+        await authFetch(
+          `/api/projects/${activeProjectId}/expenses/subcategory-override`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              categoryName,
+              subcategory,
+              overridePercent,
+            }),
+          }
+        );
+      } catch (err: unknown) {
+        setStorageError(
+          err instanceof Error ? err.message : 'تغییر درصد زیردسته انجام نشد.'
+        );
+        return false;
       }
 
-      const nextExpenses = expenses.map((e) =>
-        e.projectId === activeProjectId &&
-        e.categoryName === categoryName &&
-        e.subcategory === subcategory
-          ? { ...e, overridePercent }
-          : e
+      setExpenses((prev) =>
+        prev.map((e) =>
+          e.projectId === activeProjectId &&
+          e.categoryName === categoryName &&
+          e.subcategory === subcategory
+            ? { ...e, overridePercent }
+            : e
+        )
       );
-      setExpenses(nextExpenses);
-      if (!isCloud) {
-        persistLocalSnapshot(
-          projects,
-          categories,
-          nextExpenses,
-          versions,
-          localNextId
-        );
-      }
       return true;
     };
 
@@ -795,30 +541,18 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   ) => {
     if (!activeProjectId) return false;
     setStorageError(null);
-    if (isCloud) {
-      try {
-        await authFetch(
-          `/api/projects/${activeProjectId}/expenses/${expenseId}`,
-          { method: 'DELETE' }
-        );
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'حذف هزینه انجام نشد.'
-        );
-        return false;
-      }
-    }
-    const nextExpenses = expenses.filter((e) => e.id !== expenseId);
-    setExpenses(nextExpenses);
-    if (!isCloud) {
-      persistLocalSnapshot(
-        projects,
-        categories,
-        nextExpenses,
-        versions,
-        localNextId
+    try {
+      await authFetch(
+        `/api/projects/${activeProjectId}/expenses/${expenseId}`,
+        { method: 'DELETE' }
       );
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'حذف هزینه انجام نشد.'
+      );
+      return false;
     }
+    setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
     return true;
   };
 
@@ -828,42 +562,22 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   ) => {
     if (!activeProjectId) return false;
     setStorageError(null);
-    if (isCloud) {
-      try {
-        const created = await authFetch(
-          `/api/projects/${activeProjectId}/categories`,
-          {
-            method: 'POST',
-            body: JSON.stringify({ name, subcategories }),
-          }
-        );
-        setCategories((prev) => [...prev, created]);
-        return true;
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'ایجاد دسته انجام نشد.'
-        );
-        return false;
-      }
+    try {
+      const created = await authFetch(
+        `/api/projects/${activeProjectId}/categories`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ name, subcategories }),
+        }
+      );
+      setCategories((prev) => [...prev, created]);
+      return true;
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'ایجاد دسته انجام نشد.'
+      );
+      return false;
     }
-
-    const maxOrder = projectCategories.reduce(
-      (m, c) => Math.max(m, c.sortOrder),
-      0
-    );
-    const created: CategoryItem = {
-      id: localNextId,
-      projectId: activeProjectId,
-      name: name.trim(),
-      sortOrder: maxOrder + 1,
-      subcategories,
-    };
-    const nextCats = [...categories, created];
-    const nextId = localNextId + 1;
-    setCategories(nextCats);
-    setLocalNextId(nextId);
-    persistLocalSnapshot(projects, nextCats, expenses, versions, nextId);
-    return true;
   };
 
   const updateCategory: WorkspaceContextValue['updateCategory'] = async (
@@ -875,103 +589,64 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     const oldCat = categories.find((c) => c.id === categoryId);
     if (!oldCat) return false;
 
-    if (isCloud) {
-      try {
-        const updated = await authFetch(
-          `/api/projects/${activeProjectId}/categories/${categoryId}`,
-          {
-            method: 'PATCH',
-            body: JSON.stringify(updates),
-          }
-        );
-        setCategories((prev) =>
-          prev.map((c) => (c.id === categoryId ? updated : c))
-        );
-        if (updates.name && updates.name !== oldCat.name) {
-          setExpenses((prev) =>
-            prev.map((e) =>
-              e.projectId === activeProjectId && e.categoryId === categoryId
-                ? { ...e, categoryName: updates.name! }
-                : e
-            )
-          );
-          if (activeProject) {
-            const rates = { ...(activeProject.draftCategoryRates ?? {}) };
-            if (Object.prototype.hasOwnProperty.call(rates, oldCat.name)) {
-              rates[updates.name] = rates[oldCat.name];
-              delete rates[oldCat.name];
-              setProjects((prev) =>
-                prev.map((p) =>
-                  p.id === activeProject.id
-                    ? { ...p, draftCategoryRates: rates }
-                    : p
-                )
-              );
-            }
-          }
+    try {
+      const updated = await authFetch(
+        `/api/projects/${activeProjectId}/categories/${categoryId}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(updates),
         }
-        return true;
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'ویرایش دسته انجام نشد.'
-        );
-        return false;
-      }
-    }
-
-    const nextCats = categories.map((c) =>
-      c.id === categoryId ? { ...c, ...updates } : c
-    );
-    let nextExpenses = expenses;
-    let nextProjects = projects;
-    if (updates.name && updates.name !== oldCat.name) {
-      nextExpenses = expenses.map((e) =>
-        e.projectId === activeProjectId && e.categoryId === categoryId
-          ? { ...e, categoryName: updates.name! }
-          : e
       );
-      if (activeProject) {
-        const rates = { ...(activeProject.draftCategoryRates ?? {}) };
-        if (Object.prototype.hasOwnProperty.call(rates, oldCat.name)) {
-          rates[updates.name] = rates[oldCat.name];
-          delete rates[oldCat.name];
-        }
-        nextProjects = projects.map((p) =>
-          p.id === activeProject.id ? { ...p, draftCategoryRates: rates } : p
+      setCategories((prev) =>
+        prev.map((c) => (c.id === categoryId ? updated : c))
+      );
+      if (updates.name && updates.name !== oldCat.name) {
+        setExpenses((prev) =>
+          prev.map((e) =>
+            e.projectId === activeProjectId && e.categoryId === categoryId
+              ? { ...e, categoryName: updates.name! }
+              : e
+          )
         );
+        if (activeProject) {
+          const rates = { ...(activeProject.draftCategoryRates ?? {}) };
+          if (Object.prototype.hasOwnProperty.call(rates, oldCat.name)) {
+            rates[updates.name] = rates[oldCat.name];
+            delete rates[oldCat.name];
+            setProjects((prev) =>
+              prev.map((p) =>
+                p.id === activeProject.id
+                  ? { ...p, draftCategoryRates: rates }
+                  : p
+              )
+            );
+          }
+        }
       }
+      return true;
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'ویرایش دسته انجام نشد.'
+      );
+      return false;
     }
-    setCategories(nextCats);
-    setExpenses(nextExpenses);
-    setProjects(nextProjects);
-    persistLocalSnapshot(
-      nextProjects,
-      nextCats,
-      nextExpenses,
-      versions,
-      localNextId
-    );
-    return true;
   };
 
   const reorderCategories = async (orderedIds: number[]) => {
     if (!activeProjectId) return;
-    if (isCloud) {
-      await authFetch(`/api/projects/${activeProjectId}/categories/reorder`, {
-        method: 'PATCH',
-        body: JSON.stringify({ orderedIds }),
-      }).catch((e) => console.error(e));
-    }
+    await authFetch(`/api/projects/${activeProjectId}/categories/reorder`, {
+      method: 'PATCH',
+      body: JSON.stringify({ orderedIds }),
+    }).catch((e) => console.error(e));
+
     const orderMap = new Map(orderedIds.map((id, idx) => [id, idx + 1]));
-    const nextCats = categories.map((c) =>
-      c.projectId === activeProjectId && orderMap.has(c.id)
-        ? { ...c, sortOrder: orderMap.get(c.id)! }
-        : c
+    setCategories((prev) =>
+      prev.map((c) =>
+        c.projectId === activeProjectId && orderMap.has(c.id)
+          ? { ...c, sortOrder: orderMap.get(c.id)! }
+          : c
+      )
     );
-    setCategories(nextCats);
-    if (!isCloud) {
-      persistLocalSnapshot(projects, nextCats, expenses, versions, localNextId);
-    }
   };
 
   const deleteCategory: WorkspaceContextValue['deleteCategory'] = async (
@@ -980,53 +655,41 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   ) => {
     if (!activeProjectId) return false;
     setStorageError(null);
-    if (isCloud) {
-      try {
-        await authFetch(
-          `/api/projects/${activeProjectId}/categories/${categoryId}`,
-          {
-            method: 'DELETE',
-            body: JSON.stringify({ targetCategoryId }),
-          }
-        );
-      } catch (err: unknown) {
-        setStorageError(
-          err instanceof Error ? err.message : 'حذف دسته انجام نشد.'
-        );
-        return false;
-      }
+    try {
+      await authFetch(
+        `/api/projects/${activeProjectId}/categories/${categoryId}`,
+        {
+          method: 'DELETE',
+          body: JSON.stringify({ targetCategoryId }),
+        }
+      );
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'حذف دسته انجام نشد.'
+      );
+      return false;
     }
 
     const targetCat = targetCategoryId
       ? categories.find((c) => c.id === targetCategoryId)
       : null;
 
-    const nextCats = categories.filter((c) => c.id !== categoryId);
-    const nextExpenses = expenses.map((e) => {
-      if (e.projectId === activeProjectId && e.categoryId === categoryId) {
-        if (targetCat) {
-          return {
-            ...e,
-            categoryId: targetCat.id,
-            categoryName: targetCat.name,
-          };
+    setCategories((prev) => prev.filter((c) => c.id !== categoryId));
+    setExpenses((prev) =>
+      prev.map((e) => {
+        if (e.projectId === activeProjectId && e.categoryId === categoryId) {
+          if (targetCat) {
+            return {
+              ...e,
+              categoryId: targetCat.id,
+              categoryName: targetCat.name,
+            };
+          }
+          return { ...e, categoryId: null };
         }
-        return { ...e, categoryId: null };
-      }
-      return e;
-    });
-
-    setCategories(nextCats);
-    setExpenses(nextExpenses);
-    if (!isCloud) {
-      persistLocalSnapshot(
-        projects,
-        nextCats,
-        nextExpenses,
-        versions,
-        localNextId
-      );
-    }
+        return e;
+      })
+    );
     return true;
   };
 
@@ -1051,108 +714,67 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         referenceVersion: refVersion,
       });
 
-      if (isCloud) {
-        try {
-          const created = (await authFetch(
-            `/api/projects/${activeProject.id}/versions`,
-            {
-              method: 'POST',
-              body: JSON.stringify(payload),
-            }
-          )) as PricingVersion;
-          setVersions((prev) => [created, ...prev]);
-          setSelectedVersionId(created.id);
-          return created;
-        } catch (err: unknown) {
-          setStorageError(
-            err instanceof Error ? err.message : 'ثبت نسخه انجام نشد.'
-          );
-          return null;
-        }
+      try {
+        const created = (await authFetch(
+          `/api/projects/${activeProject.id}/versions`,
+          {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          }
+        )) as PricingVersion;
+        setVersions((prev) => [created, ...prev]);
+        setSelectedVersionId(created.id);
+        return created;
+      } catch (err: unknown) {
+        setStorageError(
+          err instanceof Error ? err.message : 'ثبت نسخه انجام نشد.'
+        );
+        return null;
       }
-
-      const created: PricingVersion = {
-        ...payload,
-        id: localNextId,
-      };
-      const nextVers = [created, ...versions];
-      const nextId = localNextId + 1;
-      setVersions(nextVers);
-      setLocalNextId(nextId);
-      setSelectedVersionId(created.id);
-      persistLocalSnapshot(projects, categories, expenses, nextVers, nextId);
-      return created;
     };
 
   const updatePricingVersionMeta: WorkspaceContextValue['updatePricingVersionMeta'] =
     async (versionId, data) => {
       if (!activeProjectId) return false;
       setStorageError(null);
-      if (isCloud) {
-        try {
-          const updated = await authFetch(
-            `/api/projects/${activeProjectId}/versions/${versionId}`,
-            {
-              method: 'PATCH',
-              body: JSON.stringify(data),
-            }
-          );
-          setVersions((prev) =>
-            prev.map((v) => (v.id === versionId ? updated : v))
-          );
-          return true;
-        } catch (err: unknown) {
-          setStorageError(
-            err instanceof Error ? err.message : 'ویرایش نسخه انجام نشد.'
-          );
-          return false;
-        }
+      try {
+        const updated = await authFetch(
+          `/api/projects/${activeProjectId}/versions/${versionId}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+          }
+        );
+        setVersions((prev) =>
+          prev.map((v) => (v.id === versionId ? updated : v))
+        );
+        return true;
+      } catch (err: unknown) {
+        setStorageError(
+          err instanceof Error ? err.message : 'ویرایش نسخه انجام نشد.'
+        );
+        return false;
       }
-
-      const nextVers = versions.map((v) =>
-        v.id === versionId ? { ...v, ...data } : v
-      );
-      setVersions(nextVers);
-      persistLocalSnapshot(
-        projects,
-        categories,
-        expenses,
-        nextVers,
-        localNextId
-      );
-      return true;
     };
 
   const deletePricingVersion: WorkspaceContextValue['deletePricingVersion'] =
     async (versionId) => {
       if (!activeProjectId) return false;
       setStorageError(null);
-      if (isCloud) {
-        try {
-          await authFetch(
-            `/api/projects/${activeProjectId}/versions/${versionId}`,
-            { method: 'DELETE' }
-          );
-        } catch (err: unknown) {
-          setStorageError(
-            err instanceof Error ? err.message : 'حذف نسخه انجام نشد.'
-          );
-          return false;
-        }
+      try {
+        await authFetch(
+          `/api/projects/${activeProjectId}/versions/${versionId}`,
+          { method: 'DELETE' }
+        );
+      } catch (err: unknown) {
+        setStorageError(
+          err instanceof Error ? err.message : 'حذف نسخه انجام نشد.'
+        );
+        return false;
       }
-      const nextVers = versions.filter((v) => v.id !== versionId);
-      setVersions(nextVers);
+      setVersions((prev) => prev.filter((v) => v.id !== versionId));
       if (selectedVersionId === versionId) {
         setSelectedVersionId('draft');
-      }
-      if (!isCloud) {
-        persistLocalSnapshot(
-          projects,
-          categories,
-          expenses,
-          nextVers,
-          localNextId
-        );
       }
       return true;
     };

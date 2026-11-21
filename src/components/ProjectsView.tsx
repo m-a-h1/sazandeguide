@@ -1,3 +1,5 @@
+'use client';
+
 import React, { useState } from 'react';
 import { Building2, Check, Edit3, Plus, Trash2 } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';

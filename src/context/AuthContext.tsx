@@ -1,75 +1,133 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import {
-  onAuthStateChanged,
-  signInWithPopup,
-  signOut,
-  type User,
-} from 'firebase/auth';
-import { auth, googleAuthProvider } from '../lib/firebase';
+'use client';
+
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from 'react';
+
+export interface AuthUser {
+  role: 'superadmin' | 'builder';
+  userId: number;
+  username: string;
+  displayName: string;
+}
+
+export type LoginPortal = 'builder' | 'superadmin';
 
 interface AuthContextValue {
-  user: User | null;
+  user: AuthUser | null;
   loading: boolean;
   authError: string | null;
-  signInWithGoogle: () => Promise<void>;
-  signOutUser: () => Promise<void>;
-  getIdToken: () => Promise<string | null>;
+  loginWithCredentials: (
+    username: string,
+    password: string,
+    portal?: LoginPortal
+  ) => Promise<boolean>;
+  logout: () => Promise<void>;
   clearAuthError: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+interface AuthProviderProps {
+  children: React.ReactNode;
+  initialUser?: AuthUser | null;
+  initialResolved?: boolean;
+}
+
+export function AuthProvider({
+  children,
+  initialUser = null,
+  initialResolved = false,
+}: AuthProviderProps) {
+  const [user, setUser] = useState<AuthUser | null>(initialUser);
+  const [loading, setLoading] = useState(!initialResolved);
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(
-      auth,
-      (firebaseUser) => {
-        setUser(firebaseUser);
-        setLoading(false);
-      },
-      (error) => {
-        console.error('Auth state listener error:', error);
-        setAuthError('بررسی وضعیت ورود با خطا مواجه شد.');
-        setLoading(false);
+    let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    fetch('/api/auth/me', {
+      credentials: 'include',
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (res.ok && data?.user) {
+          setUser(data.user as AuthUser);
+        } else if (res.ok || res.status === 401) {
+          setUser(null);
+          if (data?.error) {
+            setAuthError(data.error);
+          }
+        } else if (data?.error) {
+          setAuthError(data.error);
+        }
+      })
+      .catch(() => {
+        if (!cancelled && !initialResolved) {
+          setUser(null);
+        }
+      })
+      .finally(() => {
+        clearTimeout(timeoutId);
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [initialResolved]);
+
+  const loginWithCredentials = useCallback(
+    async (
+      username: string,
+      password: string,
+      portal: LoginPortal = 'builder'
+    ): Promise<boolean> => {
+      setAuthError(null);
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, portal }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data?.user) {
+          setAuthError(data?.error || 'ورود به سامانه انجام نشد.');
+          return false;
+        }
+        setUser(data.user as AuthUser);
+        return true;
+      } catch {
+        setAuthError('ارتباط با سرور برقرار نشد. لطفاً دوباره تلاش کنید.');
+        return false;
       }
-    );
-    return unsubscribe;
+    },
+    []
+  );
+
+  const logout = useCallback(async () => {
+    setAuthError(null);
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include',
+      });
+    } finally {
+      setUser(null);
+    }
   }, []);
-
-  const signInWithGoogle = async () => {
-    setAuthError(null);
-    try {
-      await signInWithPopup(auth, googleAuthProvider);
-    } catch (error: unknown) {
-      console.error('Google sign-in error:', error);
-      setAuthError(
-        'ورود با حساب گوگل انجام نشد. لطفاً مسدودکنندهٔ پنجره‌های بازشو را بررسی کرده و دوباره تلاش کنید.'
-      );
-    }
-  };
-
-  const signOutUser = async () => {
-    setAuthError(null);
-    try {
-      await signOut(auth);
-    } catch (error) {
-      console.error('Sign out error:', error);
-      setAuthError('خروج از حساب با خطا مواجه شد.');
-    }
-  };
-
-  const getIdToken = async (): Promise<string | null> => {
-    if (!auth.currentUser) return null;
-    try {
-      return await auth.currentUser.getIdToken();
-    } catch {
-      return null;
-    }
-  };
 
   return (
     <AuthContext.Provider
@@ -77,9 +135,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         loading,
         authError,
-        signInWithGoogle,
-        signOutUser,
-        getIdToken,
+        loginWithCredentials,
+        logout,
         clearAuthError: () => setAuthError(null),
       }}
     >
