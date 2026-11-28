@@ -1,14 +1,29 @@
 import { DEFAULT_CATEGORIES_TEMPLATE, PDF_SAMPLE_AUDIT_NOTE, PDF_SAMPLE_EXPENSES } from "../data/pdfSeed";
 import { connectToDatabase, DatabaseConfigError } from "../lib/mongodb";
+import { deleteProjectImageFromS3 } from "../lib/s3";
 import { CategoryModel, type CategoryDoc } from "../models/Category";
 import { getNextSequence, getNextSequenceRange } from "../models/Counter";
 import { ExpenseModel, type ExpenseDoc } from "../models/Expense";
+import { ExpenseTagModel, type ExpenseTagDoc } from "../models/ExpenseTag";
 import { PricingVersionModel, type PricingVersionDoc } from "../models/PricingVersion";
 import { ProjectModel, type ProjectDoc } from "../models/Project";
-import type { VersionItemSnapshot } from "../types/app";
+import type {
+  ExpenseEntryMode,
+  ExpenseImageAttachment,
+  ExpenseUnitType,
+  VersionItemSnapshot,
+  WeightUnit,
+} from "../types/app";
+
+export class TagConflictError extends Error {
+  constructor(message = "برچسبی با این نام از قبل در این پروژه وجود دارد.") {
+    super(message);
+    this.name = "TagConflictError";
+  }
+}
 
 function sanitizeDbError(context: string, error: unknown): Error {
-  if (error instanceof DatabaseConfigError) {
+  if (error instanceof DatabaseConfigError || error instanceof TagConflictError) {
     return error;
   }
   console.error(`Database error in ${context}:`, error);
@@ -68,18 +83,64 @@ function serializeCategory(doc: CategoryDoc) {
   };
 }
 
+function serializeTag(doc: ExpenseTagDoc) {
+  return {
+    id: doc.id,
+    projectId: doc.projectId,
+    name: doc.name,
+    percentAdjustment:
+      typeof doc.percentAdjustment === "number" ? doc.percentAdjustment : 0,
+    createdAt: doc.createdAt ? new Date(doc.createdAt).toISOString() : undefined,
+    updatedAt: doc.updatedAt ? new Date(doc.updatedAt).toISOString() : undefined,
+  };
+}
+
 function serializeExpense(doc: ExpenseDoc) {
+  const entryMode: ExpenseEntryMode =
+    doc.entryMode === "detailed" || Boolean(doc.unitType)
+      ? "detailed"
+      : "general";
+  const unitType: ExpenseUnitType | null =
+    doc.unitType === "weight" ||
+    doc.unitType === "count" ||
+    doc.unitType === "meter" ||
+    doc.unitType === "service"
+      ? doc.unitType
+      : null;
+  const weightUnit: WeightUnit | null =
+    doc.weightUnit === "kg" || doc.weightUnit === "ton" ? doc.weightUnit : null;
+  const images: ExpenseImageAttachment[] = Array.isArray(doc.images)
+    ? doc.images.map((img) => ({
+        key: img.key,
+        url: img.url,
+        fileName: img.fileName ?? "image",
+        contentType: img.contentType ?? "image/jpeg",
+        size: typeof img.size === "number" ? img.size : 0,
+        uploadedAt: img.uploadedAt ?? "",
+      }))
+    : [];
+
   return {
     id: doc.id,
     projectId: doc.projectId,
     categoryId: typeof doc.categoryId === "number" ? doc.categoryId : null,
     categoryName: doc.categoryName,
     subcategory: doc.subcategory ?? "",
+    tagId: typeof doc.tagId === "number" ? doc.tagId : null,
+    tagName: doc.tagName ?? "",
     dateJalali: doc.dateJalali,
     title: doc.title,
     baseAmount: doc.baseAmount,
     overridePercent: typeof doc.overridePercent === "number" ? doc.overridePercent : null,
     source: doc.source ?? "دستی",
+    entryMode,
+    unitType,
+    quantity: typeof doc.quantity === "number" ? doc.quantity : null,
+    itemCount: typeof doc.itemCount === "number" ? doc.itemCount : null,
+    weightUnit,
+    unitPrice: typeof doc.unitPrice === "number" ? doc.unitPrice : null,
+    description: doc.description ?? "",
+    images,
   };
 }
 
@@ -111,6 +172,19 @@ async function assertProjectOwnership(projectId: number, userId: number) {
   if (!Number.isInteger(projectId) || projectId <= 0) return null;
   if (!Number.isInteger(userId) || userId <= 0) return null;
   return ProjectModel.findOne({ id: projectId, userId }).lean();
+}
+
+export async function assertBuilderOwnsProject(
+  userId: number,
+  projectId: number,
+): Promise<boolean> {
+  try {
+    await connectToDatabase();
+    const owned = await assertProjectOwnership(projectId, userId);
+    return Boolean(owned);
+  } catch (error) {
+    throw sanitizeDbError("assertBuilderOwnsProject", error);
+  }
 }
 
 export async function getOrSeedUserWorkspace(userId: number) {
@@ -176,10 +250,10 @@ export async function getOrSeedUserWorkspace(userId: number) {
 
     const projectIds = userProjects.map((p) => p.id);
     if (projectIds.length === 0) {
-      return { projects: [], categories: [], expenses: [], versions: [] };
+      return { projects: [], categories: [], expenses: [], versions: [], tags: [] };
     }
 
-    const [allCategories, allExpenses, allVersions] = await Promise.all([
+    const [allCategories, allExpenses, allVersions, allTags] = await Promise.all([
       CategoryModel.find({ projectId: { $in: projectIds } })
         .sort({ sortOrder: 1, id: 1 })
         .lean(),
@@ -189,6 +263,9 @@ export async function getOrSeedUserWorkspace(userId: number) {
       PricingVersionModel.find({ projectId: { $in: projectIds } })
         .sort({ id: -1 })
         .lean(),
+      ExpenseTagModel.find({ projectId: { $in: projectIds } })
+        .sort({ id: 1 })
+        .lean(),
     ]);
 
     return {
@@ -196,6 +273,7 @@ export async function getOrSeedUserWorkspace(userId: number) {
       categories: allCategories.map(serializeCategory),
       expenses: allExpenses.map(serializeExpense),
       versions: allVersions.map(serializeVersion),
+      tags: allTags.map(serializeTag),
     };
   } catch (error) {
     throw sanitizeDbError("getOrSeedUserWorkspace", error);
@@ -313,12 +391,26 @@ export async function deleteProjectForUser(userId: number, projectId: number) {
     const owned = await assertProjectOwnership(projectId, userId);
     if (!owned) return false;
 
+    const projectExpenses = await ExpenseModel.find({ projectId })
+      .select({ images: 1 })
+      .lean();
+    const imageKeys = projectExpenses.flatMap((exp) =>
+      Array.isArray(exp.images) ? exp.images.map((i) => i.key) : [],
+    );
+
     await Promise.all([
       CategoryModel.deleteMany({ projectId }),
       ExpenseModel.deleteMany({ projectId }),
+      ExpenseTagModel.deleteMany({ projectId }),
       PricingVersionModel.deleteMany({ projectId }),
       ProjectModel.deleteOne({ id: projectId, userId }),
     ]);
+
+    if (imageKeys.length > 0) {
+      await Promise.allSettled(
+        imageKeys.map((key) => deleteProjectImageFromS3(projectId, key)),
+      );
+    }
 
     return true;
   } catch (error) {
@@ -458,11 +550,20 @@ export async function createExpensesForProject(
   items: Array<{
     categoryName: string;
     subcategory: string;
+    tagId?: number | null;
     dateJalali: string;
     title: string;
     baseAmount: number;
     overridePercent?: number | null;
     source: string;
+    entryMode?: ExpenseEntryMode;
+    unitType?: ExpenseUnitType | null;
+    quantity?: number | null;
+    itemCount?: number | null;
+    weightUnit?: WeightUnit | null;
+    unitPrice?: number | null;
+    description?: string;
+    images?: ExpenseImageAttachment[];
   }>,
   mode: "append" | "replace" = "append",
 ) {
@@ -476,8 +577,12 @@ export async function createExpensesForProject(
       await ExpenseModel.deleteMany({ projectId });
     }
 
-    const existingCats = await CategoryModel.find({ projectId }).lean();
+    const [existingCats, existingTags] = await Promise.all([
+      CategoryModel.find({ projectId }).lean(),
+      ExpenseTagModel.find({ projectId }).lean(),
+    ]);
     const catByName = new Map<string, CategoryDoc>(existingCats.map((c) => [c.name, c]));
+    const tagById = new Map<number, ExpenseTagDoc>(existingTags.map((t) => [t.id, t]));
     let maxOrder = existingCats.reduce((m, c) => Math.max(m, c.sortOrder), 0);
 
     for (const item of items) {
@@ -510,18 +615,32 @@ export async function createExpensesForProject(
 
     const expStartId = await getNextSequenceRange("expenses", items.length);
     const inserted = await ExpenseModel.insertMany(
-      items.map((item, idx) => ({
-        id: expStartId + idx,
-        projectId,
-        categoryId: catByName.get(item.categoryName)?.id ?? null,
-        categoryName: item.categoryName,
-        subcategory: item.subcategory ?? "",
-        dateJalali: item.dateJalali,
-        title: item.title,
-        baseAmount: item.baseAmount,
-        overridePercent: item.overridePercent ?? null,
-        source: item.source,
-      })),
+      items.map((item, idx) => {
+        const resolvedTag =
+          typeof item.tagId === "number" ? tagById.get(item.tagId) ?? null : null;
+        return {
+          id: expStartId + idx,
+          projectId,
+          categoryId: catByName.get(item.categoryName)?.id ?? null,
+          categoryName: item.categoryName,
+          subcategory: item.subcategory ?? "",
+          tagId: resolvedTag ? resolvedTag.id : null,
+          tagName: resolvedTag ? resolvedTag.name : "",
+          dateJalali: item.dateJalali,
+          title: item.title,
+          baseAmount: item.baseAmount,
+          overridePercent: item.overridePercent ?? null,
+          source: item.source,
+          entryMode: item.entryMode ?? "general",
+          unitType: item.unitType ?? null,
+          quantity: item.quantity ?? null,
+          itemCount: item.itemCount ?? null,
+          weightUnit: item.weightUnit ?? null,
+          unitPrice: item.unitPrice ?? null,
+          description: item.description ?? "",
+          images: Array.isArray(item.images) ? item.images : [],
+        };
+      }),
     );
 
     const updatedCats = await CategoryModel.find({ projectId }).sort({ sortOrder: 1, id: 1 }).lean();
@@ -543,10 +662,19 @@ export async function updateExpenseForProject(
     categoryId: number | null;
     categoryName: string;
     subcategory: string;
+    tagId: number | null;
     dateJalali: string;
     title: string;
     baseAmount: number;
     overridePercent: number | null;
+    entryMode: ExpenseEntryMode;
+    unitType: ExpenseUnitType | null;
+    quantity: number | null;
+    itemCount: number | null;
+    weightUnit: WeightUnit | null;
+    unitPrice: number | null;
+    description: string;
+    images: ExpenseImageAttachment[];
   }>,
 ) {
   try {
@@ -555,7 +683,59 @@ export async function updateExpenseForProject(
     const owned = await assertProjectOwnership(projectId, userId);
     if (!owned) return null;
 
-    const updated = await ExpenseModel.findOneAndUpdate({ id: expenseId, projectId }, { $set: data }, { returnDocument: "after" }).lean();
+    const existing = await ExpenseModel.findOne({ id: expenseId, projectId }).lean();
+    if (!existing) return null;
+
+    if (data.categoryName && data.subcategory) {
+      const cat = await CategoryModel.findOne({
+        projectId,
+        name: data.categoryName,
+      }).lean();
+      if (cat && !cat.subcategories.includes(data.subcategory)) {
+        await CategoryModel.updateOne(
+          { id: cat.id, projectId },
+          { $set: { subcategories: [...cat.subcategories, data.subcategory] } },
+        );
+      }
+    }
+
+    const cleanUpdates: Record<string, unknown> = { ...data };
+    if (data.tagId !== undefined) {
+      if (data.tagId === null) {
+        cleanUpdates.tagId = null;
+        cleanUpdates.tagName = "";
+      } else if (typeof data.tagId === "number") {
+        const tagDoc = await ExpenseTagModel.findOne({
+          id: data.tagId,
+          projectId,
+        }).lean();
+        if (tagDoc) {
+          cleanUpdates.tagId = tagDoc.id;
+          cleanUpdates.tagName = tagDoc.name;
+        } else {
+          cleanUpdates.tagId = null;
+          cleanUpdates.tagName = "";
+        }
+      }
+    }
+
+    const updated = await ExpenseModel.findOneAndUpdate(
+      { id: expenseId, projectId },
+      { $set: cleanUpdates },
+      { returnDocument: "after" },
+    ).lean();
+
+    if (updated && Array.isArray(data.images) && Array.isArray(existing.images)) {
+      const nextKeys = new Set(data.images.map((i) => i.key));
+      const removedKeys = existing.images
+        .map((i) => i.key)
+        .filter((key) => !nextKeys.has(key));
+      if (removedKeys.length > 0) {
+        await Promise.allSettled(
+          removedKeys.map((key) => deleteProjectImageFromS3(projectId, key)),
+        );
+      }
+    }
 
     return updated ? serializeExpense(updated) : null;
   } catch (error) {
@@ -599,7 +779,15 @@ export async function deleteExpenseForProject(userId: number, projectId: number,
     const owned = await assertProjectOwnership(projectId, userId);
     if (!owned) return false;
 
+    const existing = await ExpenseModel.findOne({ id: expenseId, projectId }).lean();
+    if (!existing) return false;
+
     const res = await ExpenseModel.deleteOne({ id: expenseId, projectId });
+    if (res.deletedCount > 0 && Array.isArray(existing.images) && existing.images.length > 0) {
+      await Promise.allSettled(
+        existing.images.map((img) => deleteProjectImageFromS3(projectId, img.key)),
+      );
+    }
     return res.deletedCount > 0;
   } catch (error) {
     throw sanitizeDbError("deleteExpenseForProject", error);
@@ -692,5 +880,140 @@ export async function deletePricingVersionForProject(userId: number, projectId: 
     return res.deletedCount > 0;
   } catch (error) {
     throw sanitizeDbError("deletePricingVersionForProject", error);
+  }
+}
+
+export async function listTagsForProject(userId: number, projectId: number) {
+  try {
+    await connectToDatabase();
+
+    const owned = await assertProjectOwnership(projectId, userId);
+    if (!owned) return null;
+
+    const docs = await ExpenseTagModel.find({ projectId }).sort({ id: 1 }).lean();
+    return docs.map(serializeTag);
+  } catch (error) {
+    throw sanitizeDbError("listTagsForProject", error);
+  }
+}
+
+export async function createTagForProject(
+  userId: number,
+  projectId: number,
+  data: { name: string; percentAdjustment?: number },
+) {
+  try {
+    await connectToDatabase();
+
+    const owned = await assertProjectOwnership(projectId, userId);
+    if (!owned) return null;
+
+    const existing = await ExpenseTagModel.findOne({
+      projectId,
+      name: data.name,
+    }).lean();
+    if (existing) {
+      throw new TagConflictError();
+    }
+
+    const id = await getNextSequence("tags");
+    const created = await ExpenseTagModel.create({
+      id,
+      projectId,
+      name: data.name,
+      percentAdjustment:
+        typeof data.percentAdjustment === "number" &&
+        Number.isFinite(data.percentAdjustment)
+          ? data.percentAdjustment
+          : 0,
+    });
+
+    return serializeTag(created.toObject());
+  } catch (error) {
+    throw sanitizeDbError("createTagForProject", error);
+  }
+}
+
+export async function updateTagForProject(
+  userId: number,
+  projectId: number,
+  tagId: number,
+  data: Partial<{ name: string; percentAdjustment: number }>,
+) {
+  try {
+    await connectToDatabase();
+
+    const owned = await assertProjectOwnership(projectId, userId);
+    if (!owned) return null;
+
+    const existing = await ExpenseTagModel.findOne({ id: tagId, projectId }).lean();
+    if (!existing) return null;
+
+    const cleanUpdates: Record<string, unknown> = {};
+    if (data.name !== undefined) {
+      if (data.name !== existing.name) {
+        const dup = await ExpenseTagModel.findOne({
+          projectId,
+          name: data.name,
+          id: { $ne: tagId },
+        }).lean();
+        if (dup) {
+          throw new TagConflictError();
+        }
+      }
+      cleanUpdates.name = data.name;
+    }
+
+    if (
+      data.percentAdjustment !== undefined &&
+      typeof data.percentAdjustment === "number" &&
+      Number.isFinite(data.percentAdjustment)
+    ) {
+      cleanUpdates.percentAdjustment = data.percentAdjustment;
+    }
+
+    const updated = await ExpenseTagModel.findOneAndUpdate(
+      { id: tagId, projectId },
+      { $set: cleanUpdates },
+      { returnDocument: "after" },
+    ).lean();
+
+    if (!updated) return null;
+
+    if (data.name && data.name !== existing.name) {
+      await ExpenseModel.updateMany(
+        { projectId, tagId },
+        { $set: { tagName: data.name } },
+      );
+    }
+
+    return serializeTag(updated);
+  } catch (error) {
+    throw sanitizeDbError("updateTagForProject", error);
+  }
+}
+
+export async function deleteTagForProject(
+  userId: number,
+  projectId: number,
+  tagId: number,
+) {
+  try {
+    await connectToDatabase();
+
+    const owned = await assertProjectOwnership(projectId, userId);
+    if (!owned) return false;
+
+    const res = await ExpenseTagModel.deleteOne({ id: tagId, projectId });
+    if (res.deletedCount > 0) {
+      await ExpenseModel.updateMany(
+        { projectId, tagId },
+        { $set: { tagId: null, tagName: "" } },
+      );
+      return true;
+    }
+    return false;
+  } catch (error) {
+    throw sanitizeDbError("deleteTagForProject", error);
   }
 }

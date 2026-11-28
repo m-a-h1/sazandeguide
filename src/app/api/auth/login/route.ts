@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
       };
 
       const token = createSessionToken(sessionUser);
-      const res = NextResponse.json({ user: sessionUser });
+      const res = NextResponse.json({ user: sessionUser, token });
       res.cookies.set({
         ...getSessionCookieOptions(request),
         value: token,
@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
     };
 
     const token = createSessionToken(sessionUser);
-    const res = NextResponse.json({ user: sessionUser });
+    const res = NextResponse.json({ user: sessionUser, token });
     res.cookies.set({
       ...getSessionCookieOptions(request),
       value: token,

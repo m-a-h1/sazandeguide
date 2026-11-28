@@ -494,7 +494,11 @@ export function createProjectExportWorkbook(params: {
       item.dateJalali,
       item.baseAmount,
       item.effectivePercent,
-      item.rateSource === 'INDEPENDENT' ? 'درصد مستقل' : 'پیروی از دسته',
+      item.rateSource === 'INDEPENDENT'
+        ? 'درصد مستقل'
+        : item.rateSource === 'TAG'
+          ? 'نرخ برچسب'
+          : 'پیروی از دسته',
       Math.round(item.estimatedAmount),
       Math.round(item.diffFromBaseAmount),
     ]);

@@ -2,17 +2,31 @@
 
 import React, { useMemo, useState } from 'react';
 import {
+  ChevronDown,
+  ChevronLeft,
   Download,
   Edit3,
   FileSpreadsheet,
   Filter,
+  Layers,
   Plus,
   RotateCcw,
   Search,
+  Tag,
   Trash2,
 } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
-import type { ExpenseItem } from '../types/app';
+import type {
+  ExpenseItem,
+  ExpenseTag,
+  VersionItemSnapshot,
+} from '../types/app';
+import {
+  computeWeightedTagPriceSummary,
+  formatAverageUnitPriceValue,
+  formatDetailedCalculationSummary,
+  isDetailedExpense,
+} from '../utils/detailedExpense';
 import { formatJalaliDisplay, isJalaliInRange, normalizeDigits } from '../utils/jalali';
 import {
   computePartnershipMetrics,
@@ -24,8 +38,10 @@ import {
 } from '../utils/pricing';
 import { createProjectExportWorkbook } from '../utils/excelParser';
 import { ConfirmModal } from './ConfirmModal';
+import { TagManagerModal } from './TagManagerModal';
 
 interface ExpensesRatesViewProps {
+  onOpenDetailedAdd?: () => void;
   onOpenManualAdd: () => void;
   onOpenManualEdit: (expense: ExpenseItem) => void;
   onOpenExcelImport: () => void;
@@ -33,6 +49,7 @@ interface ExpensesRatesViewProps {
 }
 
 export function ExpensesRatesView({
+  onOpenDetailedAdd,
   onOpenManualAdd,
   onOpenManualEdit,
   onOpenExcelImport,
@@ -42,12 +59,14 @@ export function ExpensesRatesView({
     activeProject,
     projectCategories,
     projectExpenses,
+    projectTags,
     projectVersions,
     selectedVersionId,
     setSelectedVersionId,
     activeVersion,
     displayedValuation,
     updateDraftCategoryRate,
+    updateTag,
     updateExpense,
     setSubcategoryOverride,
     deleteExpense,
@@ -56,11 +75,20 @@ export function ExpensesRatesView({
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState<string>('همه');
   const [filterSubcategory, setFilterSubcategory] = useState<string>('همه');
+  const [filterTag, setFilterTag] = useState<string>('همه');
   const [filterRateType, setFilterRateType] = useState<
-    'همه' | 'CATEGORY' | 'INDEPENDENT'
+    'همه' | 'CATEGORY' | 'TAG' | 'INDEPENDENT'
   >('همه');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+
+  // Tag grouping & manager state
+  const [viewMode, setViewMode] = useState<'grouped' | 'flat'>('grouped');
+  const [expandedTagIds, setExpandedTagIds] = useState<Record<number, boolean>>({});
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [tagDraftRates, setTagDraftRates] = useState<Record<number, string>>({});
+  const [editingTagRateId, setEditingTagRateId] = useState<number | null>(null);
+  const [tagRateInputRaw, setTagRateInputRaw] = useState<string>('');
 
   // Subcategory bulk rate state
   const [bulkCat, setBulkCat] = useState<string>('');
@@ -97,6 +125,36 @@ export function ExpensesRatesView({
     return Array.from(subs);
   }, [bulkCat, projectCategories, projectExpenses]);
 
+  const tagBaseStats = useMemo(() => {
+    const map = new Map<
+      number,
+      { count: number; baseSum: number; items: ExpenseItem[] }
+    >();
+    for (const exp of projectExpenses) {
+      if (typeof exp.tagId === 'number' && exp.tagId > 0) {
+        const cur = map.get(exp.tagId) ?? { count: 0, baseSum: 0, items: [] };
+        cur.count += 1;
+        cur.baseSum += exp.baseAmount;
+        cur.items.push(exp);
+        map.set(exp.tagId, cur);
+      }
+    }
+    return map;
+  }, [projectExpenses]);
+
+  const filterTagOptions = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const t of projectTags) {
+      map.set(t.id, t.name);
+    }
+    for (const item of displayedValuation.items) {
+      if (typeof item.tagId === 'number' && item.tagId > 0 && !map.has(item.tagId)) {
+        map.set(item.tagId, item.tagName || `برچسب #${item.tagId}`);
+      }
+    }
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [projectTags, displayedValuation.items]);
+
   const filteredItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return displayedValuation.items.filter((item) => {
@@ -104,7 +162,8 @@ export function ExpensesRatesView({
         q &&
         !item.title.toLowerCase().includes(q) &&
         !item.categoryName.toLowerCase().includes(q) &&
-        !item.subcategory.toLowerCase().includes(q)
+        !item.subcategory.toLowerCase().includes(q) &&
+        !(item.tagName ?? '').toLowerCase().includes(q)
       ) {
         return false;
       }
@@ -116,6 +175,11 @@ export function ExpensesRatesView({
         item.subcategory !== filterSubcategory
       ) {
         return false;
+      }
+      if (filterTag === 'untagged') {
+        if (typeof item.tagId === 'number' && item.tagId > 0) return false;
+      } else if (filterTag !== 'همه') {
+        if (item.tagId !== Number(filterTag)) return false;
       }
       if (filterRateType !== 'همه' && item.rateSource !== filterRateType) {
         return false;
@@ -133,9 +197,146 @@ export function ExpensesRatesView({
     searchQuery,
     filterCategory,
     filterSubcategory,
+    filterTag,
     filterRateType,
     dateFrom,
     dateTo,
+  ]);
+
+  const groupedTableData = useMemo(() => {
+    const currency = activeProject?.currency ?? 'تعیین‌نشده';
+    const tagMap = new Map<number, ExpenseTag>();
+    for (const t of projectTags) {
+      tagMap.set(t.id, t);
+    }
+
+    const rawExpById = new Map<number, ExpenseItem>();
+    for (const exp of projectExpenses) {
+      rawExpById.set(exp.id, exp);
+    }
+
+    const bucketMap = new Map<
+      number,
+      {
+        tagId: number;
+        tagName: string;
+        tagPercent: number;
+        items: VersionItemSnapshot[];
+      }
+    >();
+    const untaggedItems: VersionItemSnapshot[] = [];
+
+    for (const item of filteredItems) {
+      if (typeof item.tagId === 'number' && item.tagId > 0) {
+        const existingTag = tagMap.get(item.tagId);
+        let bucket = bucketMap.get(item.tagId);
+        if (!bucket) {
+          bucket = {
+            tagId: item.tagId,
+            tagName: existingTag?.name ?? item.tagName ?? `برچسب #${item.tagId}`,
+            tagPercent:
+              !isReadOnlyVersion && existingTag
+                ? existingTag.percentAdjustment
+                : item.rateSource === 'TAG'
+                  ? item.effectivePercent
+                  : existingTag?.percentAdjustment ?? 0,
+            items: [],
+          };
+          bucketMap.set(item.tagId, bucket);
+        }
+        if (isReadOnlyVersion && item.rateSource === 'TAG') {
+          bucket.tagPercent = item.effectivePercent;
+        }
+        bucket.items.push(item);
+      } else {
+        untaggedItems.push(item);
+      }
+    }
+
+    const tagGroups = Array.from(bucketMap.values())
+      .map((bucket) => {
+        let totalBaseAmount = 0;
+        let totalEstimatedAmount = 0;
+        const categories = new Set<string>();
+        const sources = new Set<'CATEGORY' | 'TAG' | 'INDEPENDENT'>();
+        const weightedInputs: Array<
+          Pick<
+            ExpenseItem,
+            'baseAmount' | 'unitType' | 'quantity' | 'weightUnit'
+          >
+        > = [];
+
+        for (const it of bucket.items) {
+          totalBaseAmount += it.baseAmount;
+          totalEstimatedAmount += it.estimatedAmount;
+          if (it.categoryName) categories.add(it.categoryName);
+          sources.add(it.rateSource);
+
+          const raw = rawExpById.get(it.expenseId);
+          weightedInputs.push({
+            baseAmount: it.baseAmount,
+            unitType: raw?.unitType ?? null,
+            quantity: raw?.quantity ?? null,
+            weightUnit: raw?.weightUnit ?? null,
+          });
+        }
+
+        const totalDiffAmount = totalEstimatedAmount - totalBaseAmount;
+        const blendedPercent =
+          totalBaseAmount > 0 ? (totalDiffAmount / totalBaseAmount) * 100 : bucket.tagPercent;
+        const rateSummary: 'TAG' | 'CATEGORY' | 'INDEPENDENT' | 'MIXED' =
+          sources.size === 1 ? Array.from(sources)[0] : 'MIXED';
+
+        const weightedPrice = computeWeightedTagPriceSummary(
+          weightedInputs,
+          currency,
+          bucket.tagPercent
+        );
+
+        const effectiveAveragePrice =
+          weightedPrice.totalNormalizedQuantity &&
+          weightedPrice.totalNormalizedQuantity > 0
+            ? totalEstimatedAmount / weightedPrice.totalNormalizedQuantity
+            : bucket.items.length > 0
+              ? totalEstimatedAmount / bucket.items.length
+              : null;
+
+        const effectiveAverageLabel =
+          effectiveAveragePrice !== null
+            ? `${formatAverageUnitPriceValue(effectiveAveragePrice, currency)}${
+                weightedPrice.unitLabel ? ` / ${weightedPrice.unitLabel}` : ''
+              }`
+            : '—';
+
+        const quantitySummaryLabel =
+          weightedPrice.totalNormalizedQuantity && weightedPrice.unitLabel
+            ? `${formatNumberFa(weightedPrice.totalNormalizedQuantity, {
+                maxDecimals: 2,
+              })} ${weightedPrice.unitLabel}`
+            : null;
+
+        return {
+          ...bucket,
+          totalBaseAmount,
+          totalEstimatedAmount,
+          totalDiffAmount,
+          blendedPercent,
+          categoriesLabel: Array.from(categories).join('، '),
+          rateSummary,
+          weightedPrice,
+          effectiveAverageLabel,
+          quantitySummaryLabel,
+        };
+      })
+      .sort((a, b) => b.totalBaseAmount - a.totalBaseAmount);
+
+    return { tagGroups, untaggedItems };
+  }, [
+    filteredItems,
+    projectTags,
+    projectExpenses,
+    activeProject?.currency,
+    isReadOnlyVersion,
   ]);
 
   const displayedTaxPercent = displayedValuation.taxPercent;
@@ -185,6 +386,41 @@ export function ExpensesRatesView({
   );
 
   if (!activeProject) return null;
+
+  const handleSaveTagRateInline = async (tagId: number) => {
+    const parsed = parseStrictNumericInput(tagRateInputRaw);
+    if (parsed === null) return;
+    await updateTag(tagId, { percentAdjustment: parsed });
+    setEditingTagRateId(null);
+    setTagRateInputRaw('');
+  };
+
+  const handleTagCardRateChange = (tagId: number, rawValue: string) => {
+    const normalized = normalizeDigits(rawValue);
+    setTagDraftRates((prev) => ({ ...prev, [tagId]: normalized }));
+    const trimmed = normalized.trim();
+    if (
+      trimmed === '' ||
+      trimmed === '-' ||
+      trimmed === '+' ||
+      trimmed.endsWith('.')
+    ) {
+      return;
+    }
+    const parsed = parseStrictNumericInput(trimmed);
+    if (parsed !== null) {
+      void updateTag(tagId, { percentAdjustment: parsed });
+    }
+  };
+
+  const handleTagCardRateBlur = (tagId: number) => {
+    setTagDraftRates((prev) => {
+      if (!(tagId in prev)) return prev;
+      const next = { ...prev };
+      delete next[tagId];
+      return next;
+    });
+  };
 
   const handleSaveOverride = async (expenseId: number) => {
     const parsed = parseStrictNumericInput(overrideInputRaw);
@@ -252,7 +488,7 @@ export function ExpensesRatesView({
             جدول هزینه‌ها و تنظیم نرخ‌های تعدیل
           </h1>
           <p className="mt-0.5 text-xs text-slate-500">
-            قانون اولویت نرخ: در صورت ثبت درصد مستقل برای یک هزینه، فقط همان درصد جایگزین درصد دسته می‌شود و با آن جمع نمی‌شود.
+            قانون اولویت نرخ: درصد مستقل هزینه بر درصد برچسب و درصد دسته ارجح است و این درصدها با هم جمع نمی‌شوند.
           </p>
         </div>
 
@@ -275,6 +511,17 @@ export function ExpensesRatesView({
             ))}
           </select>
 
+          {!isReadOnlyVersion && (
+            <button
+              type="button"
+              onClick={() => setTagManagerOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap shrink-0"
+            >
+              <Tag className="h-4 w-4 text-slate-600" />
+              مدیریت برچسب‌ها ({formatNumberFa(projectTags.length)})
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onOpenExcelImport}
@@ -283,6 +530,17 @@ export function ExpensesRatesView({
             <FileSpreadsheet className="h-4 w-4" />
             ورود از اکسل
           </button>
+
+          {onOpenDetailedAdd && (
+            <button
+              type="button"
+              onClick={onOpenDetailedAdd}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 px-3.5 py-2 text-xs font-semibold text-sky-900 hover:bg-sky-100 whitespace-nowrap shrink-0"
+            >
+              <Plus className="h-4 w-4" />
+              ثبت هزینهٔ جزئی
+            </button>
+          )}
 
           <button
             type="button"
@@ -375,6 +633,134 @@ export function ExpensesRatesView({
                 );
               })}
             </div>
+          </div>
+
+          {/* Tag Rate Adjuster */}
+          <div className="border-t border-slate-100 pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  درصد تعدیل برچسب‌ها (تگ‌ها)
+                </h2>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  درصد غیرصفر هر برچسب، جایگزین نرخ دسته اصلی برای همهٔ ردیف‌های آن برچسب می‌شود (درصد مستقل ردیف همچنان اولویت بالاتری دارد).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTagManagerOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap shrink-0"
+              >
+                <Tag className="h-3.5 w-3.5 text-slate-600" />
+                افزودن یا ویرایش برچسب
+              </button>
+            </div>
+
+            {projectTags.length === 0 ? (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-slate-200 bg-slate-50/70 px-4 py-3 text-xs text-slate-600">
+                <span>
+                  هنوز برچسبی برای این پروژه تعریف نشده است. برچسب‌ها امکان تجمیع خریدهای تکراری و تنظیم درصد مشترک را می‌دهند.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setTagManagerOpen(true)}
+                  className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap shrink-0"
+                >
+                  ایجاد اولین برچسب
+                </button>
+              </div>
+            ) : (
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4 xl:grid-cols-6">
+                {projectTags.map((tag) => {
+                  const stats = tagBaseStats.get(tag.id) ?? {
+                    count: 0,
+                    baseSum: 0,
+                    items: [],
+                  };
+                  const weighted = computeWeightedTagPriceSummary(
+                    stats.items,
+                    activeProject.currency,
+                    tag.percentAdjustment
+                  );
+                  const inputValue =
+                    tagDraftRates[tag.id] ?? String(tag.percentAdjustment);
+
+                  return (
+                    <div
+                      key={tag.id}
+                      className="rounded-lg border border-slate-200 bg-slate-50 p-3"
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <label
+                          htmlFor={`tag-rate-${tag.id}`}
+                          className="block truncate text-xs font-semibold text-slate-800"
+                          title={tag.name}
+                        >
+                          {tag.name}
+                        </label>
+                        {tag.percentAdjustment !== 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleTagCardRateBlur(tag.id);
+                              void updateTag(tag.id, { percentAdjustment: 0 });
+                            }}
+                            title="بازنشانی درصد برچسب به صفر"
+                            className="text-[11px] font-medium text-sky-800 hover:underline shrink-0"
+                          >
+                            ۰٪
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="mt-0.5 truncate text-[11px] text-slate-500 tabular-nums">
+                        {formatNumberFa(stats.count)} ردیف ·{' '}
+                        {formatCurrencyValue(
+                          stats.baseSum,
+                          activeProject.currency
+                        )}
+                      </div>
+
+                      {stats.count > 0 && weighted.averageBasePrice !== null && (
+                        <div className="mt-1 truncate text-[11px] text-slate-600 tabular-nums">
+                          میانگین: {weighted.averageBaseLabel}
+                        </div>
+                      )}
+
+                      <div className="mt-2 flex items-center gap-1.5">
+                        <input
+                          id={`tag-rate-${tag.id}`}
+                          type="text"
+                          inputMode="decimal"
+                          value={inputValue}
+                          onChange={(e) =>
+                            handleTagCardRateChange(tag.id, e.target.value)
+                          }
+                          onBlur={() => handleTagCardRateBlur(tag.id)}
+                          className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-bold text-slate-900 tabular-nums focus:border-sky-700 focus:outline-none"
+                        />
+                        <span className="text-xs font-semibold text-slate-500">
+                          ٪
+                        </span>
+                      </div>
+
+                      {stats.count > 0 &&
+                        weighted.averageAdjustedPrice !== null && (
+                          <div
+                            className={`mt-1.5 truncate text-[11px] tabular-nums ${
+                              tag.percentAdjustment !== 0
+                                ? 'font-semibold text-sky-900'
+                                : 'text-slate-500'
+                            }`}
+                          >
+                            با درصد: {weighted.averageAdjustedLabel}
+                          </div>
+                        )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Subcategory bulk independent rate setter */}
@@ -546,6 +932,29 @@ export function ExpensesRatesView({
 
           <div>
             <label
+              htmlFor="filter-tag"
+              className="block text-[11px] font-medium text-slate-600"
+            >
+              برچسب (تگ)
+            </label>
+            <select
+              id="filter-tag"
+              value={filterTag}
+              onChange={(e) => setFilterTag(e.target.value)}
+              className="mt-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900"
+            >
+              <option value="همه">همهٔ برچسب‌ها</option>
+              <option value="untagged">بدون برچسب</option>
+              {filterTagOptions.map((t) => (
+                <option key={t.id} value={String(t.id)}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label
               htmlFor="filter-rate-type"
               className="block text-[11px] font-medium text-slate-600"
             >
@@ -556,13 +965,14 @@ export function ExpensesRatesView({
               value={filterRateType}
               onChange={(e) =>
                 setFilterRateType(
-                  e.target.value as 'همه' | 'CATEGORY' | 'INDEPENDENT'
+                  e.target.value as 'همه' | 'CATEGORY' | 'TAG' | 'INDEPENDENT'
                 )
               }
               className="mt-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900"
             >
               <option value="همه">همهٔ نرخ‌ها</option>
               <option value="CATEGORY">پیروی از دسته</option>
+              <option value="TAG">نرخ برچسب</option>
               <option value="INDEPENDENT">درصد مستقل</option>
             </select>
           </div>
@@ -604,6 +1014,7 @@ export function ExpensesRatesView({
           {(searchQuery ||
             filterCategory !== 'همه' ||
             filterSubcategory !== 'همه' ||
+            filterTag !== 'همه' ||
             filterRateType !== 'همه' ||
             dateFrom ||
             dateTo) && (
@@ -613,6 +1024,7 @@ export function ExpensesRatesView({
                 setSearchQuery('');
                 setFilterCategory('همه');
                 setFilterSubcategory('همه');
+                setFilterTag('همه');
                 setFilterRateType('همه');
                 setDateFrom('');
                 setDateTo('');
@@ -986,7 +1398,46 @@ export function ExpensesRatesView({
       </section>
 
       {/* Main Expenses Table */}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+        {filteredItems.length > 0 && groupedTableData.tagGroups.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/70 px-4 py-2.5">
+            <div className="flex items-center gap-2 text-xs text-slate-600 tabular-nums">
+              <Layers className="h-4 w-4 text-slate-500" />
+              <span>
+                {formatNumberFa(groupedTableData.tagGroups.length)} گروه برچسب
+                {groupedTableData.untaggedItems.length > 0
+                  ? ` · ${formatNumberFa(groupedTableData.untaggedItems.length)} ردیف بدون برچسب`
+                  : ''}
+              </span>
+            </div>
+
+            <div className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setViewMode('grouped')}
+                className={`rounded-md px-3 py-1 font-semibold transition-colors ${
+                  viewMode === 'grouped'
+                    ? 'bg-slate-900 text-white'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                گروه‌بندی برچسب‌ها
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('flat')}
+                className={`rounded-md px-3 py-1 font-semibold transition-colors ${
+                  viewMode === 'flat'
+                    ? 'bg-slate-900 text-white'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                نمایش فهرست ساده
+              </button>
+            </div>
+          </div>
+        )}
+
         {filteredItems.length === 0 ? (
           <div className="p-10 text-center">
             <p className="text-sm font-medium text-slate-700">
@@ -1012,201 +1463,543 @@ export function ExpensesRatesView({
             )}
           </div>
         ) : (
-          <table className="w-full min-w-[920px] text-right text-xs">
-            <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
-              <tr>
-                <th className="px-4 py-3 font-semibold">نام هزینه</th>
-                <th className="px-3 py-3 font-semibold">دسته و زیرمجموعه</th>
-                <th className="px-3 py-3 font-semibold">مبلغ پایه</th>
-                <th className="px-3 py-3 font-semibold">درصد مؤثر</th>
-                <th className="px-3 py-3 font-semibold">مبلغ برآوردی</th>
-                <th className="px-3 py-3 font-semibold">اختلاف مبلغی</th>
-                <th className="px-3 py-3 font-semibold">نوع نرخ</th>
-                {!isReadOnlyVersion && (
-                  <th className="px-3 py-3 font-semibold text-left">عملیات</th>
-                )}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredItems.map((item) => {
-                const rawExp = projectExpenses.find(
-                  (e) => e.id === item.expenseId
-                );
-                const isEditingRate = editingOverrideId === item.expenseId;
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-right text-xs">
+              <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">نام هزینه / برچسب</th>
+                  <th className="px-3 py-3 font-semibold">دسته و زیرمجموعه</th>
+                  <th className="px-3 py-3 font-semibold">مبلغ پایه</th>
+                  <th className="px-3 py-3 font-semibold">درصد مؤثر</th>
+                  <th className="px-3 py-3 font-semibold">مبلغ برآوردی</th>
+                  <th className="px-3 py-3 font-semibold">اختلاف مبلغی</th>
+                  <th className="px-3 py-3 font-semibold">نوع نرخ</th>
+                  {!isReadOnlyVersion && (
+                    <th className="px-3 py-3 font-semibold text-left">عملیات</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {(() => {
+                  const renderExpenseRow = (
+                    item: VersionItemSnapshot,
+                    nested: boolean
+                  ) => {
+                    const rawExp = projectExpenses.find(
+                      (e) => e.id === item.expenseId
+                    );
+                    const isEditingRate = editingOverrideId === item.expenseId;
 
-                return (
-                  <tr
-                    key={item.expenseId}
-                    className="hover:bg-slate-50/80 transition-colors"
-                  >
-                    <td className="px-4 py-3">
-                      <div className="font-semibold text-slate-900">
-                        {item.title}
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-slate-500 tabular-nums">
-                        تاریخ: {formatJalaliDisplay(item.dateJalali)}
-                      </div>
-                    </td>
+                    return (
+                      <tr
+                        key={item.expenseId}
+                        className={
+                          nested
+                            ? 'bg-slate-50/70 hover:bg-slate-100/70 transition-colors'
+                            : 'hover:bg-slate-50/80 transition-colors'
+                        }
+                      >
+                        <td
+                          className={
+                            nested
+                              ? 'py-3 pl-4 pr-9 border-r-2 border-r-sky-700'
+                              : 'px-4 py-3'
+                          }
+                        >
+                          <div className="font-semibold text-slate-900">
+                            {item.title}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 tabular-nums">
+                            <span>
+                              تاریخ: {formatJalaliDisplay(item.dateJalali)}
+                            </span>
+                            {!nested && item.tagName && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span className="font-medium text-sky-900">
+                                  برچسب: {item.tagName}
+                                </span>
+                              </>
+                            )}
+                            {rawExp && isDetailedExpense(rawExp) && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span className="text-sky-800">
+                                  {formatDetailedCalculationSummary(
+                                    rawExp,
+                                    activeProject.currency
+                                  )}
+                                </span>
+                                {Array.isArray(rawExp.images) &&
+                                  rawExp.images.length > 0 && (
+                                    <>
+                                      <span aria-hidden="true">·</span>
+                                      <span>
+                                        {formatNumberFa(rawExp.images.length)}{' '}
+                                        تصویر
+                                      </span>
+                                    </>
+                                  )}
+                              </>
+                            )}
+                          </div>
+                        </td>
 
-                    <td className="px-3 py-3 text-slate-700">
-                      <span>{item.categoryName}</span>
-                      {item.subcategory && (
+                        <td className="px-3 py-3 text-slate-700">
+                          <span>{item.categoryName}</span>
+                          {item.subcategory && (
+                            <>
+                              <span className="mx-1.5 text-slate-400">·</span>
+                              <span className="text-slate-500">
+                                {item.subcategory}
+                              </span>
+                            </>
+                          )}
+                        </td>
+
+                        <td className="px-3 py-3 font-medium text-slate-900 tabular-nums">
+                          {formatCurrencyValue(
+                            item.baseAmount,
+                            activeProject.currency
+                          )}
+                        </td>
+
+                        <td className="px-3 py-3 tabular-nums">
+                          {isEditingRate && !isReadOnlyVersion ? (
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={overrideInputRaw}
+                                onChange={(e) =>
+                                  setOverrideInputRaw(
+                                    normalizeDigits(e.target.value)
+                                  )
+                                }
+                                aria-label={`درصد مستقل برای ${item.title}`}
+                                className="w-16 rounded border border-sky-700 px-2 py-1 text-xs font-bold tabular-nums"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleSaveOverride(item.expenseId)}
+                                className="rounded bg-slate-900 px-2 py-1 text-[11px] font-semibold text-white"
+                              >
+                                ثبت
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingOverrideId(null)}
+                                className="rounded border border-slate-300 px-2 py-1 text-[11px] text-slate-600"
+                              >
+                                لغو
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`font-bold ${
+                                  item.effectivePercent > 0
+                                    ? 'text-red-700'
+                                    : item.effectivePercent < 0
+                                      ? 'text-emerald-700'
+                                      : 'text-slate-700'
+                                }`}
+                              >
+                                {formatPercentFa(item.effectivePercent, {
+                                  showPlus: true,
+                                })}
+                              </span>
+                              {!isReadOnlyVersion && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingOverrideId(item.expenseId);
+                                    setOverrideInputRaw(
+                                      item.rateSource === 'INDEPENDENT' &&
+                                        item.overridePercent !== null
+                                        ? String(item.overridePercent)
+                                        : String(item.effectivePercent)
+                                    );
+                                  }}
+                                  aria-label={`تنظیم درصد مستقل برای ${item.title}`}
+                                  className="text-[11px] font-medium text-sky-800 hover:underline"
+                                >
+                                  تغییر
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </td>
+
+                        <td className="px-3 py-3 font-bold text-slate-900 tabular-nums">
+                          {formatCurrencyValue(
+                            item.estimatedAmount,
+                            activeProject.currency
+                          )}
+                        </td>
+
+                        <td
+                          className={`px-3 py-3 font-medium tabular-nums ${
+                            item.diffFromBaseAmount > 0
+                              ? 'text-red-700'
+                              : item.diffFromBaseAmount < 0
+                                ? 'text-emerald-700'
+                                : 'text-slate-500'
+                          }`}
+                        >
+                          {formatNumberFa(item.diffFromBaseAmount, {
+                            showPlus: true,
+                          })}
+                        </td>
+
+                        <td className="px-3 py-3">
+                          {item.rateSource === 'INDEPENDENT' ? (
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-amber-800">
+                                درصد مستقل
+                              </span>
+                              {!isReadOnlyVersion && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleClearOverride(item.expenseId)
+                                  }
+                                  aria-label={`حذف درصد مستقل ${item.title} و بازگشت به نرخ برچسب یا دسته`}
+                                  title="حذف درصد مستقل و بازگشت به نرخ برچسب یا دسته"
+                                  className="inline-flex items-center gap-1 text-[11px] text-slate-600 hover:text-slate-950 underline"
+                                >
+                                  <RotateCcw className="h-3 w-3" />
+                                  حذف مستقل
+                                </button>
+                              )}
+                            </div>
+                          ) : item.rateSource === 'TAG' ? (
+                            <span className="font-semibold text-sky-900">
+                              نرخ برچسب
+                              {!nested && item.tagName
+                                ? ` (${item.tagName})`
+                                : ''}
+                            </span>
+                          ) : (
+                            <span className="text-slate-600">پیروی از دسته</span>
+                          )}
+                        </td>
+
+                        {!isReadOnlyVersion && (
+                          <td className="px-3 py-3 text-left">
+                            <div className="inline-flex items-center gap-1">
+                              {rawExp && (
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenManualEdit(rawExp)}
+                                  aria-label={`ویرایش هزینه ${item.title}`}
+                                  className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                                >
+                                  <Edit3 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                              {rawExp && (
+                                <button
+                                  type="button"
+                                  onClick={() => setExpenseToDelete(rawExp)}
+                                  aria-label={`حذف هزینه ${item.title}`}
+                                  className="rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-700"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  };
+
+                  if (
+                    viewMode === 'flat' ||
+                    groupedTableData.tagGroups.length === 0
+                  ) {
+                    return filteredItems.map((item) =>
+                      renderExpenseRow(item, false)
+                    );
+                  }
+
+                  return (
+                    <>
+                      {groupedTableData.tagGroups.map((group) => {
+                        const isExpanded = Boolean(expandedTagIds[group.tagId]);
+                        const isEditingTagRate =
+                          editingTagRateId === group.tagId;
+                        const canEditTagRate =
+                          !isReadOnlyVersion &&
+                          projectTags.some((t) => t.id === group.tagId);
+
+                        return (
+                          <React.Fragment key={`tag-group-${group.tagId}`}>
+                            <tr className="bg-white hover:bg-slate-50/90 transition-colors">
+                              <td className="px-4 py-3">
+                                <button
+                                  type="button"
+                                  aria-expanded={isExpanded}
+                                  onClick={() =>
+                                    setExpandedTagIds((prev) => ({
+                                      ...prev,
+                                      [group.tagId]: !prev[group.tagId],
+                                    }))
+                                  }
+                                  className="flex items-center gap-2 text-right font-bold text-slate-900 hover:text-sky-900"
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4 text-slate-600 shrink-0" />
+                                  ) : (
+                                    <ChevronLeft className="h-4 w-4 text-slate-500 shrink-0" />
+                                  )}
+                                  <Tag className="h-3.5 w-3.5 text-sky-800 shrink-0" />
+                                  <span>{group.tagName}</span>
+                                  <span className="text-[11px] font-medium text-slate-500 tabular-nums">
+                                    ({formatNumberFa(group.items.length)} ردیف)
+                                  </span>
+                                </button>
+                                {(group.quantitySummaryLabel ||
+                                  group.weightedPrice.averageBasePrice !==
+                                    null) && (
+                                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 pr-6 text-[11px] text-slate-500 tabular-nums">
+                                    {group.quantitySummaryLabel && (
+                                      <span>
+                                        مقدار کل: {group.quantitySummaryLabel}
+                                      </span>
+                                    )}
+                                    {group.quantitySummaryLabel &&
+                                      group.weightedPrice.averageBasePrice !==
+                                        null && (
+                                        <span aria-hidden="true">·</span>
+                                      )}
+                                    {group.weightedPrice.averageBasePrice !==
+                                      null && (
+                                      <span>
+                                        میانگین قیمت:{' '}
+                                        {group.weightedPrice.averageBaseLabel}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+
+                              <td className="px-3 py-3 text-slate-700">
+                                {group.categoriesLabel || '—'}
+                              </td>
+
+                              <td className="px-3 py-3 font-semibold text-slate-900 tabular-nums">
+                                <div>
+                                  {formatCurrencyValue(
+                                    group.totalBaseAmount,
+                                    activeProject.currency
+                                  )}
+                                </div>
+                                {group.weightedPrice.averageBasePrice !==
+                                  null && (
+                                  <div className="mt-0.5 text-[11px] font-normal text-slate-500">
+                                    میانگین:{' '}
+                                    {group.weightedPrice.averageBaseLabel}
+                                  </div>
+                                )}
+                              </td>
+
+                              <td className="px-3 py-3 tabular-nums">
+                                {isEditingTagRate && canEditTagRate ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <input
+                                      type="text"
+                                      inputMode="decimal"
+                                      value={tagRateInputRaw}
+                                      onChange={(e) =>
+                                        setTagRateInputRaw(
+                                          normalizeDigits(e.target.value)
+                                        )
+                                      }
+                                      aria-label={`درصد تعدیل برچسب ${group.tagName}`}
+                                      className="w-16 rounded border border-sky-700 px-2 py-1 text-xs font-bold tabular-nums"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleSaveTagRateInline(group.tagId)
+                                      }
+                                      className="rounded bg-slate-900 px-2 py-1 text-[11px] font-semibold text-white"
+                                    >
+                                      ثبت
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingTagRateId(null)}
+                                      className="rounded border border-slate-300 px-2 py-1 text-[11px] text-slate-600"
+                                    >
+                                      لغو
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span
+                                        className={`font-bold ${
+                                          group.tagPercent > 0
+                                            ? 'text-red-700'
+                                            : group.tagPercent < 0
+                                              ? 'text-emerald-700'
+                                              : 'text-slate-700'
+                                        }`}
+                                      >
+                                        {formatPercentFa(group.tagPercent, {
+                                          showPlus: true,
+                                        })}
+                                      </span>
+                                      {canEditTagRate && (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingTagRateId(group.tagId);
+                                            setTagRateInputRaw(
+                                              String(group.tagPercent)
+                                            );
+                                          }}
+                                          aria-label={`تغییر درصد برچسب ${group.tagName}`}
+                                          className="text-[11px] font-medium text-sky-800 hover:underline"
+                                        >
+                                          تغییر
+                                        </button>
+                                      )}
+                                    </div>
+                                    {Math.abs(
+                                      group.blendedPercent - group.tagPercent
+                                    ) > 0.01 && (
+                                      <div className="mt-0.5 text-[11px] text-slate-500">
+                                        میانگین ردیف‌ها:{' '}
+                                        {formatPercentFa(group.blendedPercent, {
+                                          showPlus: true,
+                                        })}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+
+                              <td className="px-3 py-3 font-bold text-slate-900 tabular-nums">
+                                <div>
+                                  {formatCurrencyValue(
+                                    group.totalEstimatedAmount,
+                                    activeProject.currency
+                                  )}
+                                </div>
+                                {group.weightedPrice.averageBasePrice !==
+                                  null && (
+                                  <div className="mt-0.5 text-[11px] font-semibold text-sky-900">
+                                    میانگین تعدیل‌شده:{' '}
+                                    {group.effectiveAverageLabel}
+                                  </div>
+                                )}
+                                {group.tagPercent !== 0 &&
+                                  group.rateSummary === 'MIXED' &&
+                                  group.weightedPrice.averageAdjustedLabel !==
+                                    group.effectiveAverageLabel && (
+                                    <div className="mt-0.5 text-[11px] font-normal text-slate-500">
+                                      با نرخ برچسب:{' '}
+                                      {group.weightedPrice.averageAdjustedLabel}
+                                    </div>
+                                  )}
+                              </td>
+
+                              <td
+                                className={`px-3 py-3 font-semibold tabular-nums ${
+                                  group.totalDiffAmount > 0
+                                    ? 'text-red-700'
+                                    : group.totalDiffAmount < 0
+                                      ? 'text-emerald-700'
+                                      : 'text-slate-500'
+                                }`}
+                              >
+                                {formatNumberFa(group.totalDiffAmount, {
+                                  showPlus: true,
+                                })}
+                              </td>
+
+                              <td className="px-3 py-3">
+                                {group.rateSummary === 'TAG' ? (
+                                  <span className="font-semibold text-sky-900">
+                                    نرخ برچسب
+                                  </span>
+                                ) : group.rateSummary === 'INDEPENDENT' ? (
+                                  <span className="font-semibold text-amber-800">
+                                    همه مستقل
+                                  </span>
+                                ) : group.rateSummary === 'MIXED' ? (
+                                  <span className="font-medium text-slate-700">
+                                    ترکیبی (برچسب / مستقل / دسته)
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-600">
+                                    پیروی از دسته
+                                  </span>
+                                )}
+                              </td>
+
+                              {!isReadOnlyVersion && (
+                                <td className="px-3 py-3 text-left">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedTagIds((prev) => ({
+                                        ...prev,
+                                        [group.tagId]: !prev[group.tagId],
+                                      }))
+                                    }
+                                    className="text-[11px] font-medium text-sky-800 hover:underline whitespace-nowrap"
+                                  >
+                                    {isExpanded ? 'بستن' : 'مشاهده اقلام'}
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+
+                            {isExpanded &&
+                              group.items.map((item) =>
+                                renderExpenseRow(item, true)
+                              )}
+                          </React.Fragment>
+                        );
+                      })}
+
+                      {groupedTableData.untaggedItems.length > 0 && (
                         <>
-                          <span className="mx-1.5 text-slate-400">·</span>
-                          <span className="text-slate-500">
-                            {item.subcategory}
-                          </span>
+                          <tr className="bg-slate-50/70">
+                            <td
+                              colSpan={isReadOnlyVersion ? 7 : 8}
+                              className="px-4 py-2 text-[11px] font-bold text-slate-600"
+                            >
+                              ردیف‌های بدون برچسب (
+                              {formatNumberFa(
+                                groupedTableData.untaggedItems.length
+                              )}
+                              )
+                            </td>
+                          </tr>
+                          {groupedTableData.untaggedItems.map((item) =>
+                            renderExpenseRow(item, false)
+                          )}
                         </>
                       )}
-                    </td>
-
-                    <td className="px-3 py-3 font-medium text-slate-900 tabular-nums">
-                      {formatCurrencyValue(item.baseAmount, activeProject.currency)}
-                    </td>
-
-                    <td className="px-3 py-3 tabular-nums">
-                      {isEditingRate && !isReadOnlyVersion ? (
-                        <div className="flex items-center gap-1.5">
-                          <input
-                            type="text"
-                            inputMode="decimal"
-                            value={overrideInputRaw}
-                            onChange={(e) =>
-                              setOverrideInputRaw(normalizeDigits(e.target.value))
-                            }
-                            aria-label={`درصد مستقل برای ${item.title}`}
-                            className="w-16 rounded border border-sky-700 px-2 py-1 text-xs font-bold tabular-nums"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => handleSaveOverride(item.expenseId)}
-                            className="rounded bg-slate-900 px-2 py-1 text-[11px] font-semibold text-white"
-                          >
-                            ثبت
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEditingOverrideId(null)}
-                            className="rounded border border-slate-300 px-2 py-1 text-[11px] text-slate-600"
-                          >
-                            لغو
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`font-bold ${
-                              item.effectivePercent > 0
-                                ? 'text-red-700'
-                                : item.effectivePercent < 0
-                                  ? 'text-emerald-700'
-                                  : 'text-slate-700'
-                            }`}
-                          >
-                            {formatPercentFa(item.effectivePercent, {
-                              showPlus: true,
-                            })}
-                          </span>
-                          {!isReadOnlyVersion && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingOverrideId(item.expenseId);
-                                setOverrideInputRaw(
-                                  item.rateSource === 'INDEPENDENT' &&
-                                    item.overridePercent !== null
-                                    ? String(item.overridePercent)
-                                    : String(item.effectivePercent)
-                                );
-                              }}
-                              aria-label={`تنظیم درصد مستقل برای ${item.title}`}
-                              className="text-[11px] font-medium text-sky-800 hover:underline"
-                            >
-                              تغییر
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </td>
-
-                    <td className="px-3 py-3 font-bold text-slate-900 tabular-nums">
-                      {formatCurrencyValue(
-                        item.estimatedAmount,
-                        activeProject.currency
-                      )}
-                    </td>
-
-                    <td
-                      className={`px-3 py-3 font-medium tabular-nums ${
-                        item.diffFromBaseAmount > 0
-                          ? 'text-red-700'
-                          : item.diffFromBaseAmount < 0
-                            ? 'text-emerald-700'
-                            : 'text-slate-500'
-                      }`}
-                    >
-                      {formatNumberFa(item.diffFromBaseAmount, {
-                        showPlus: true,
-                      })}
-                    </td>
-
-                    <td className="px-3 py-3">
-                      {item.rateSource === 'INDEPENDENT' ? (
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-amber-800">
-                            درصد مستقل
-                          </span>
-                          {!isReadOnlyVersion && (
-                            <button
-                              type="button"
-                              onClick={() => handleClearOverride(item.expenseId)}
-                              aria-label={`حذف درصد مستقل ${item.title} و بازگشت به دسته`}
-                              title="حذف درصد مستقل و بازگشت به نرخ دسته"
-                              className="inline-flex items-center gap-1 text-[11px] text-slate-600 hover:text-slate-950 underline"
-                            >
-                              <RotateCcw className="h-3 w-3" />
-                              حذف مستقل
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-slate-600">پیروی از دسته</span>
-                      )}
-                    </td>
-
-                    {!isReadOnlyVersion && (
-                      <td className="px-3 py-3 text-left">
-                        <div className="inline-flex items-center gap-1">
-                          {rawExp && (
-                            <button
-                              type="button"
-                              onClick={() => onOpenManualEdit(rawExp)}
-                              aria-label={`ویرایش هزینه ${item.title}`}
-                              className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-                            >
-                              <Edit3 className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                          {rawExp && (
-                            <button
-                              type="button"
-                              onClick={() => setExpenseToDelete(rawExp)}
-                              aria-label={`حذف هزینه ${item.title}`}
-                              className="rounded p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-700"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    </>
+                  );
+                })()}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
+
+      <TagManagerModal
+        open={tagManagerOpen}
+        onClose={() => setTagManagerOpen(false)}
+      />
 
       <ConfirmModal
         open={Boolean(expenseToDelete)}

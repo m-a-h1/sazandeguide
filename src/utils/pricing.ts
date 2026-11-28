@@ -11,16 +11,18 @@ import { normalizeDigits, toPersianDigits } from './jalali';
 
 /**
  * Computes effective rate with strict replacement priority:
- * - If expense has an independent overridePercent (not null/undefined), ONLY that overridePercent applies.
- * - Otherwise, the category rate applies.
- * - Never adds or multiplies category rate with independent override.
+ * 1. If expense has an independent overridePercent (not null/undefined), ONLY that overridePercent applies.
+ * 2. Else if expense has a tag with a non-zero tagRate, that tagRate applies.
+ * 3. Otherwise, the category rate applies.
+ * Never adds or multiplies rates together.
  */
 export function computeEffectiveRate(
   categoryRate: number,
-  overridePercent: number | null | undefined
+  overridePercent: number | null | undefined,
+  tagRate?: number | null
 ): {
   effectivePercent: number;
-  rateSource: 'CATEGORY' | 'INDEPENDENT';
+  rateSource: 'CATEGORY' | 'TAG' | 'INDEPENDENT';
 } {
   if (
     overridePercent !== null &&
@@ -30,6 +32,17 @@ export function computeEffectiveRate(
     return {
       effectivePercent: overridePercent,
       rateSource: 'INDEPENDENT',
+    };
+  }
+  if (
+    tagRate !== null &&
+    tagRate !== undefined &&
+    Number.isFinite(tagRate) &&
+    tagRate !== 0
+  ) {
+    return {
+      effectivePercent: tagRate,
+      rateSource: 'TAG',
     };
   }
   return {
@@ -148,6 +161,7 @@ export function computePartnershipMetrics(params: {
 export function calculateProjectValuation(params: {
   expenses: ExpenseItem[];
   categoryRates: Record<string, number>;
+  tagRatesById?: Record<number, number>;
   areaSqm: number | null;
   usefulAreaSqm?: number | null;
   taxPercent?: number;
@@ -158,6 +172,7 @@ export function calculateProjectValuation(params: {
   const {
     expenses,
     categoryRates,
+    tagRatesById = {},
     areaSqm,
     usefulAreaSqm = null,
     taxPercent = 0,
@@ -190,9 +205,14 @@ export function calculateProjectValuation(params: {
     const categoryRateApplied = Number.isFinite(categoryRates[exp.categoryName])
       ? categoryRates[exp.categoryName]
       : 0;
+    const tagRateApplied =
+      typeof exp.tagId === 'number' && Number.isFinite(tagRatesById[exp.tagId])
+        ? tagRatesById[exp.tagId]
+        : null;
     const { effectivePercent, rateSource } = computeEffectiveRate(
       categoryRateApplied,
-      exp.overridePercent
+      exp.overridePercent,
+      tagRateApplied
     );
 
     const refSnapshot = referenceVersion
@@ -237,6 +257,8 @@ export function calculateProjectValuation(params: {
         rateSource === 'INDEPENDENT' ? (exp.overridePercent ?? null) : null,
       effectivePercent,
       rateSource,
+      tagId: exp.tagId ?? null,
+      tagName: exp.tagName ?? '',
       estimatedAmount,
       diffFromBaseAmount,
       diffFromBasePercent,
@@ -315,6 +337,7 @@ export function buildVersionPayload(params: {
   description: string;
   expenses: ExpenseItem[];
   categoryRates: Record<string, number>;
+  tagRatesById?: Record<number, number>;
   taxPercent?: number;
   landPrice?: number;
   partnershipPercent?: number | null;
@@ -327,6 +350,7 @@ export function buildVersionPayload(params: {
     description,
     expenses,
     categoryRates,
+    tagRatesById = {},
     taxPercent = 0,
     landPrice = 0,
     partnershipPercent = null,
@@ -336,6 +360,7 @@ export function buildVersionPayload(params: {
   const valuation = calculateProjectValuation({
     expenses,
     categoryRates,
+    tagRatesById,
     areaSqm: null,
     taxPercent,
     landPrice,

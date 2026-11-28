@@ -117,17 +117,54 @@ export function verifySessionToken(
   }
 }
 
+export function extractBearerToken(
+  authHeader: string | null | undefined
+): string | null {
+  if (!authHeader) return null;
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1]?.trim();
+  return token ? token : null;
+}
+
+export function isHttpsRequest(request: NextRequest): boolean {
+  const forwardedProto = request.headers
+    .get('x-forwarded-proto')
+    ?.split(',')[0]
+    ?.trim()
+    .toLowerCase();
+  if (forwardedProto === 'https') return true;
+
+  const forwarded = request.headers.get('forwarded');
+  if (forwarded && /proto\s*=\s*https\b/i.test(forwarded)) {
+    return true;
+  }
+
+  if (request.nextUrl.protocol.replace(':', '').toLowerCase() === 'https') {
+    return true;
+  }
+
+  const origin = request.headers.get('origin');
+  if (origin && origin.toLowerCase().startsWith('https://')) {
+    return true;
+  }
+
+  const referer = request.headers.get('referer');
+  if (referer && referer.toLowerCase().startsWith('https://')) {
+    return true;
+  }
+
+  return false;
+}
+
 export function getSessionCookieOptions(request: NextRequest, maxAge?: number) {
-  const proto =
-    request.headers.get('x-forwarded-proto') ??
-    request.nextUrl.protocol.replace(':', '');
-  const isHttps = proto === 'https';
+  const isHttps = isHttpsRequest(request);
 
   return {
     name: SESSION_COOKIE_NAME,
     httpOnly: true,
     sameSite: (isHttps ? 'none' : 'lax') as 'none' | 'lax',
     secure: isHttps,
+    partitioned: isHttps,
     path: '/',
     maxAge: maxAge ?? SESSION_TTL_SECONDS,
   };

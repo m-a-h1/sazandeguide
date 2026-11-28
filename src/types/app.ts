@@ -32,6 +32,30 @@ export interface CategoryItem {
   subcategories: string[];
 }
 
+export type ExpenseEntryMode = 'general' | 'detailed';
+
+export type ExpenseUnitType = 'weight' | 'count' | 'meter' | 'service';
+
+export type WeightUnit = 'kg' | 'ton';
+
+export interface ExpenseImageAttachment {
+  key: string;
+  url: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  uploadedAt: string;
+}
+
+export interface ExpenseTag {
+  id: number;
+  projectId: number;
+  name: string;
+  percentAdjustment: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface ExpenseItem {
   id: number;
   projectId: number;
@@ -42,7 +66,17 @@ export interface ExpenseItem {
   title: string;
   baseAmount: number;
   overridePercent: number | null;
-  source: 'دستی' | 'اکسل' | 'نمونه';
+  source: 'دستی' | 'اکسل' | 'نمونه' | 'جزئیات';
+  entryMode?: ExpenseEntryMode;
+  unitType?: ExpenseUnitType | null;
+  quantity?: number | null;
+  itemCount?: number | null;
+  weightUnit?: WeightUnit | null;
+  unitPrice?: number | null;
+  description?: string;
+  images?: ExpenseImageAttachment[];
+  tagId?: number | null;
+  tagName?: string;
 }
 
 export interface VersionItemSnapshot {
@@ -56,7 +90,9 @@ export interface VersionItemSnapshot {
   categoryRateApplied: number;
   overridePercent: number | null;
   effectivePercent: number;
-  rateSource: 'CATEGORY' | 'INDEPENDENT';
+  rateSource: 'CATEGORY' | 'TAG' | 'INDEPENDENT';
+  tagId?: number | null;
+  tagName?: string;
   estimatedAmount: number;
   diffFromBaseAmount: number;
   diffFromBasePercent: number;
@@ -138,6 +174,7 @@ export interface AiCostAnalysis {
 
 export type AppSection =
   | 'dashboard'
+  | 'detailed'
   | 'expenses'
   | 'versions'
   | 'categories'

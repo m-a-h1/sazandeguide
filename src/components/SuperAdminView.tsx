@@ -42,7 +42,7 @@ function formatCreatedAtJalali(iso: string): string {
 }
 
 export function SuperAdminView() {
-  const { user, logout } = useAuth();
+  const { user, logout, getAuthHeaders } = useAuth();
   const [builders, setBuilders] = useState<BuilderRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +79,7 @@ export function SuperAdminView() {
       const res = await fetch('/api/admin/builders', {
         credentials: 'include',
         cache: 'no-store',
+        headers: getAuthHeaders(),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -92,7 +93,7 @@ export function SuperAdminView() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => {
     loadBuilders();
@@ -140,7 +141,10 @@ export function SuperAdminView() {
       const res = await fetch('/api/admin/builders', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           name: createName.trim(),
           username: createUsername.trim(),
@@ -193,7 +197,10 @@ export function SuperAdminView() {
       const res = await fetch(`/api/admin/builders/${editingBuilder.id}`, {
         method: 'PATCH',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           name: editName.trim(),
           ...(editPassword ? { password: editPassword } : {}),
@@ -225,7 +232,10 @@ export function SuperAdminView() {
       const res = await fetch(`/api/admin/builders/${builder.id}`, {
         method: 'PATCH',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({ isActive: !builder.isActive }),
       });
       const data = await res.json().catch(() => ({}));
@@ -253,6 +263,7 @@ export function SuperAdminView() {
       const res = await fetch(`/api/admin/builders/${targetId}`, {
         method: 'DELETE',
         credentials: 'include',
+        headers: getAuthHeaders(),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {

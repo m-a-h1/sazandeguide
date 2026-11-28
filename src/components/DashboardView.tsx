@@ -14,8 +14,10 @@ import {
   Plus,
   Sparkles,
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import { useWorkspace } from '../context/WorkspaceContext';
 import type { AiCostAnalysis, AppSection } from '../types/app';
+import { isDetailedExpense } from '../utils/detailedExpense';
 import { formatJalaliDisplay } from '../utils/jalali';
 import {
   formatCurrencyValue,
@@ -35,6 +37,7 @@ export function DashboardView({
   onOpenEditProject,
   onOpenNewVersion,
 }: DashboardViewProps) {
+  const { getAuthHeaders } = useAuth();
   const {
     activeProject,
     projectExpenses,
@@ -52,6 +55,10 @@ export function DashboardView({
   const [aiError, setAiError] = useState<string | null>(null);
 
   const latestVersion = projectVersions[0] ?? null;
+  const detailedExpenseCount = useMemo(
+    () => projectExpenses.filter((e) => isDetailedExpense(e)).length,
+    [projectExpenses]
+  );
 
   // Chronological trend points (Base + Versions oldest -> newest)
   const trendPoints = useMemo(() => {
@@ -143,7 +150,11 @@ export function DashboardView({
 
       const res = await fetch('/api/ai/analyze-project', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           projectName: activeProject.name,
           currency: activeProject.currency,
@@ -364,6 +375,12 @@ export function DashboardView({
           </div>
           <div className="mt-2 text-xs text-slate-500 tabular-nums">
             {formatNumberFa(displayedValuation.items.length)} ردیف هزینهٔ پایه
+            {detailedExpenseCount > 0 && (
+              <>
+                {' · '}
+                <span>{formatNumberFa(detailedExpenseCount)} ردیف جزئی</span>
+              </>
+            )}
           </div>
           {displayedValuation.taxPercent > 0 && (
             <div className="mt-1 text-[11px] text-slate-600 tabular-nums">
@@ -672,13 +689,25 @@ export function DashboardView({
                 سهم هر دسته از کل هزینه
               </h2>
             </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('expenses')}
-              className="text-xs font-semibold text-sky-800 hover:underline"
-            >
-              مشاهده جدول کامل
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => onNavigate('detailed')}
+                className="text-xs font-semibold text-slate-700 hover:text-slate-950 hover:underline whitespace-nowrap shrink-0"
+              >
+                ثبت و گزارش جزئیات
+              </button>
+              <span aria-hidden="true" className="text-slate-300">
+                |
+              </span>
+              <button
+                type="button"
+                onClick={() => onNavigate('expenses')}
+                className="text-xs font-semibold text-sky-800 hover:underline whitespace-nowrap shrink-0"
+              >
+                مشاهده جدول کامل
+              </button>
+            </div>
           </div>
 
           {displayedValuation.categoryBreakdown.length === 0 ? (

@@ -12,6 +12,7 @@ import { useAuth } from './AuthContext';
 import type {
   CategoryItem,
   ExpenseItem,
+  ExpenseTag,
   PricingVersion,
   Project,
   ProjectCurrency,
@@ -34,6 +35,8 @@ interface WorkspaceContextValue {
   setActiveProjectId: (id: number) => void;
   projectCategories: CategoryItem[];
   projectExpenses: ExpenseItem[];
+  projectTags: ExpenseTag[];
+  tagRatesById: Record<number, number>;
   projectVersions: PricingVersion[];
   selectedVersionId: number | 'draft';
   setSelectedVersionId: (id: number | 'draft') => void;
@@ -75,11 +78,27 @@ interface WorkspaceContextValue {
     items: Array<{
       categoryName: string;
       subcategory: string;
+      tagId?: number | null;
       dateJalali: string;
       title: string;
       baseAmount: number;
       overridePercent?: number | null;
-      source: 'دستی' | 'اکسل' | 'نمونه';
+      source: 'دستی' | 'اکسل' | 'نمونه' | 'جزئیات';
+      entryMode?: 'general' | 'detailed';
+      unitType?: 'weight' | 'count' | 'meter' | 'service' | null;
+      quantity?: number | null;
+      itemCount?: number | null;
+      weightUnit?: 'kg' | 'ton' | null;
+      unitPrice?: number | null;
+      description?: string;
+      images?: Array<{
+        key: string;
+        url: string;
+        fileName: string;
+        contentType: string;
+        size: number;
+        uploadedAt: string;
+      }>;
     }>,
     mode?: 'append' | 'replace'
   ) => Promise<boolean>;
@@ -93,6 +112,13 @@ interface WorkspaceContextValue {
     overridePercent: number | null
   ) => Promise<boolean>;
   deleteExpense: (expenseId: number) => Promise<boolean>;
+
+  createTag: (name: string, percentAdjustment?: number) => Promise<ExpenseTag | null>;
+  updateTag: (
+    tagId: number,
+    updates: Partial<Pick<ExpenseTag, 'name' | 'percentAdjustment'>>
+  ) => Promise<boolean>;
+  deleteTag: (tagId: number) => Promise<boolean>;
 
   createCategory: (name: string, subcategories: string[]) => Promise<boolean>;
   updateCategory: (
@@ -121,11 +147,12 @@ interface WorkspaceContextValue {
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, getAuthHeaders } = useAuth();
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
+  const [tags, setTags] = useState<ExpenseTag[]>([]);
   const [versions, setVersions] = useState<PricingVersion[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<number | 'draft'>(
@@ -134,21 +161,25 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [storageMode, setStorageMode] = useState<StorageMode>('loading');
   const [storageError, setStorageError] = useState<string | null>(null);
 
-  const authFetch = useCallback(async (url: string, init?: RequestInit) => {
-    const res = await fetch(url, {
-      ...init,
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init?.headers ?? {}),
-      },
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.error || 'خطا در ارتباط با سرور.');
-    }
-    return data;
-  }, []);
+  const authFetch = useCallback(
+    async (url: string, init?: RequestInit) => {
+      const res = await fetch(url, {
+        ...init,
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+          ...(init?.headers ?? {}),
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'خطا در ارتباط با سرور.');
+      }
+      return data;
+    },
+    [getAuthHeaders]
+  );
 
   useEffect(() => {
     if (authLoading) return;
@@ -156,6 +187,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       setProjects([]);
       setCategories([]);
       setExpenses([]);
+      setTags([]);
       setVersions([]);
       setActiveProjectId(null);
       setStorageMode('loading');
@@ -200,6 +232,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         setProjects(loadedProjects);
         setCategories(data.categories ?? []);
         setExpenses(data.expenses ?? []);
+        setTags(data.tags ?? []);
         setVersions(loadedVersions);
         setActiveProjectId((prev) =>
           prev && loadedProjects.some((p) => p.id === prev)
@@ -246,6 +279,22 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     [expenses, activeProjectId]
   );
 
+  const projectTags = useMemo(
+    () =>
+      tags
+        .filter((t) => t.projectId === activeProjectId)
+        .sort((a, b) => a.id - b.id),
+    [tags, activeProjectId]
+  );
+
+  const tagRatesById = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const tag of projectTags) {
+      map[tag.id] = tag.percentAdjustment;
+    }
+    return map;
+  }, [projectTags]);
+
   const projectVersions = useMemo(
     () =>
       versions
@@ -263,13 +312,14 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     return calculateProjectValuation({
       expenses: projectExpenses,
       categoryRates: activeProject?.draftCategoryRates ?? {},
+      tagRatesById,
       areaSqm: activeProject?.areaSqm ?? null,
       usefulAreaSqm: activeProject?.usefulAreaSqm ?? null,
       taxPercent: activeProject?.taxPercent ?? 0,
       landPrice: activeProject?.landPrice ?? 0,
       partnershipPercent: activeProject?.partnershipPercent ?? null,
     });
-  }, [projectExpenses, activeProject]);
+  }, [projectExpenses, activeProject, tagRatesById]);
 
   const displayedValuation = useMemo((): ProjectValuation => {
     if (!activeVersion) return draftValuation;
@@ -416,6 +466,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     setProjects(nextProjects);
     setCategories((prev) => prev.filter((c) => c.projectId !== projectId));
     setExpenses((prev) => prev.filter((e) => e.projectId !== projectId));
+    setTags((prev) => prev.filter((t) => t.projectId !== projectId));
     setVersions((prev) => prev.filter((v) => v.projectId !== projectId));
     if (activeProjectId === projectId) {
       setActiveProjectId(nextProjects[0]?.id ?? null);
@@ -553,6 +604,102 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
     setExpenses((prev) => prev.filter((e) => e.id !== expenseId));
+    return true;
+  };
+
+  const createTag: WorkspaceContextValue['createTag'] = async (
+    name,
+    percentAdjustment = 0
+  ) => {
+    if (!activeProjectId) return null;
+    setStorageError(null);
+    try {
+      const created = (await authFetch(
+        `/api/projects/${activeProjectId}/tags`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ name, percentAdjustment }),
+        }
+      )) as ExpenseTag;
+      setTags((prev) => [...prev, created]);
+      return created;
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'ایجاد برچسب انجام نشد.'
+      );
+      return null;
+    }
+  };
+
+  const updateTag: WorkspaceContextValue['updateTag'] = async (
+    tagId,
+    updates
+  ) => {
+    if (!activeProjectId) return false;
+    setStorageError(null);
+    const previousTag = tags.find((t) => t.id === tagId);
+    if (updates.percentAdjustment !== undefined && previousTag) {
+      setTags((prev) =>
+        prev.map((t) =>
+          t.id === tagId
+            ? { ...t, percentAdjustment: updates.percentAdjustment! }
+            : t
+        )
+      );
+    }
+    try {
+      const updated = (await authFetch(
+        `/api/projects/${activeProjectId}/tags/${tagId}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(updates),
+        }
+      )) as ExpenseTag;
+      setTags((prev) => prev.map((t) => (t.id === tagId ? updated : t)));
+      if (updates.name) {
+        setExpenses((prev) =>
+          prev.map((e) =>
+            e.projectId === activeProjectId && e.tagId === tagId
+              ? { ...e, tagName: updated.name }
+              : e
+          )
+        );
+      }
+      return true;
+    } catch (err: unknown) {
+      if (updates.percentAdjustment !== undefined && previousTag) {
+        setTags((prev) =>
+          prev.map((t) => (t.id === tagId ? previousTag : t))
+        );
+      }
+      setStorageError(
+        err instanceof Error ? err.message : 'ویرایش برچسب انجام نشد.'
+      );
+      return false;
+    }
+  };
+
+  const deleteTag: WorkspaceContextValue['deleteTag'] = async (tagId) => {
+    if (!activeProjectId) return false;
+    setStorageError(null);
+    try {
+      await authFetch(`/api/projects/${activeProjectId}/tags/${tagId}`, {
+        method: 'DELETE',
+      });
+    } catch (err: unknown) {
+      setStorageError(
+        err instanceof Error ? err.message : 'حذف برچسب انجام نشد.'
+      );
+      return false;
+    }
+    setTags((prev) => prev.filter((t) => t.id !== tagId));
+    setExpenses((prev) =>
+      prev.map((e) =>
+        e.projectId === activeProjectId && e.tagId === tagId
+          ? { ...e, tagId: null, tagName: '' }
+          : e
+      )
+    );
     return true;
   };
 
@@ -708,6 +855,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         description: input.description,
         expenses: projectExpenses,
         categoryRates: activeProject.draftCategoryRates ?? {},
+        tagRatesById,
         taxPercent: activeProject.taxPercent ?? 0,
         landPrice: activeProject.landPrice ?? 0,
         partnershipPercent: activeProject.partnershipPercent ?? null,
@@ -791,6 +939,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         },
         projectCategories,
         projectExpenses,
+        projectTags,
+        tagRatesById,
         projectVersions,
         selectedVersionId,
         setSelectedVersionId,
@@ -808,6 +958,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         updateExpense,
         setSubcategoryOverride,
         deleteExpense,
+        createTag,
+        updateTag,
+        deleteTag,
         createCategory,
         updateCategory,
         reorderCategories,

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { hashPassword, safeCompareStrings, verifyPassword } from './password.ts';
 import {
   createSessionToken,
+  extractBearerToken,
+  getSessionCookieOptions,
+  isHttpsRequest,
   SESSION_TTL_SECONDS,
   verifySessionToken,
 } from './session.ts';
@@ -64,4 +67,41 @@ test('HMAC session token uses 30-day TTL, verifies, and rejects tampered tokens'
 
   assert.equal(verifySessionToken(`${tamperedPayload}.${sigPart}`), null);
   assert.equal(verifySessionToken(`${payloadPart}.invalidsig`), null);
+});
+
+test('extractBearerToken extracts bearer tokens case-insensitively', () => {
+  assert.equal(extractBearerToken('Bearer abc.def'), 'abc.def');
+  assert.equal(extractBearerToken('bearer   token_123  '), 'token_123');
+  assert.equal(extractBearerToken('Basic abc'), null);
+  assert.equal(extractBearerToken('Bearer   '), null);
+  assert.equal(extractBearerToken(null), null);
+});
+
+test('getSessionCookieOptions sets Secure, SameSite=None, and Partitioned for HTTPS proxies', () => {
+  const makeReq = (headers: Record<string, string>, protocol = 'http:') =>
+    ({
+      headers: new Headers(headers),
+      nextUrl: { protocol },
+    }) as unknown as Parameters<typeof getSessionCookieOptions>[0];
+
+  const proxiedHttps = getSessionCookieOptions(
+    makeReq({ 'x-forwarded-proto': 'https, http' })
+  );
+  assert.equal(proxiedHttps.secure, true);
+  assert.equal(proxiedHttps.sameSite, 'none');
+  assert.equal(proxiedHttps.partitioned, true);
+  assert.equal(proxiedHttps.httpOnly, true);
+
+  const originHttps = getSessionCookieOptions(
+    makeReq({ origin: 'https://example.run.app' })
+  );
+  assert.equal(originHttps.secure, true);
+  assert.equal(originHttps.sameSite, 'none');
+  assert.equal(originHttps.partitioned, true);
+
+  const localHttp = getSessionCookieOptions(makeReq({}));
+  assert.equal(isHttpsRequest(makeReq({})), false);
+  assert.equal(localHttp.secure, false);
+  assert.equal(localHttp.sameSite, 'lax');
+  assert.equal(localHttp.partitioned, false);
 });

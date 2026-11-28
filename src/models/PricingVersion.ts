@@ -37,9 +37,11 @@ const VersionItemSnapshotSchema = new Schema<VersionItemSnapshot>(
     effectivePercent: { type: Number, required: true },
     rateSource: {
       type: String,
-      enum: ['CATEGORY', 'INDEPENDENT'],
+      enum: ['CATEGORY', 'TAG', 'INDEPENDENT'],
       required: true,
     },
+    tagId: { type: Number, default: null },
+    tagName: { type: String, default: '' },
     estimatedAmount: { type: Number, required: true },
     diffFromBaseAmount: { type: Number, required: true },
     diffFromBasePercent: { type: Number, required: true },

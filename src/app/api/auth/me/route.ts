@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
 
   if (session.role === 'superadmin') {
     const refreshedToken = createSessionToken(session);
-    const res = NextResponse.json({ user: session });
+    const res = NextResponse.json({ user: session, token: refreshedToken });
     res.cookies.set({
       ...getSessionCookieOptions(request),
       value: refreshedToken,
@@ -45,7 +45,10 @@ export async function GET(request: NextRequest) {
       displayName: activeBuilder.displayName,
     };
     const refreshedToken = createSessionToken(refreshedUser);
-    const res = NextResponse.json({ user: refreshedUser });
+    const res = NextResponse.json({
+      user: refreshedUser,
+      token: refreshedToken,
+    });
     res.cookies.set({
       ...getSessionCookieOptions(request),
       value: refreshedToken,

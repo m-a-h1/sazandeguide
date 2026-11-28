@@ -218,5 +218,56 @@ test('Land price and partnership share calculate pure vs land-inclusive costs an
   assert.equal(v1.partnershipPercentSnapshot, 50);
 });
 
+test('Tag percentage adjustment applies to tagged expenses and respects independent override priority', () => {
+  const { expenses } = createClientSeedBundle();
+  const baseItem = expenses[0];
+  const taggedItem1 = {
+    ...baseItem,
+    id: 101,
+    baseAmount: 200000000,
+    overridePercent: null,
+    tagId: 5,
+    tagName: 'میلگرد ۱۶',
+  };
+  const taggedItem2 = {
+    ...baseItem,
+    id: 102,
+    baseAmount: 100000000,
+    overridePercent: 30, // independent override must win over tag rate
+    tagId: 5,
+    tagName: 'میلگرد ۱۶',
+  };
+  const zeroTagItem = {
+    ...baseItem,
+    id: 103,
+    baseAmount: 100000000,
+    overridePercent: null,
+    tagId: 6,
+    tagName: 'سیمان',
+  };
+
+  const val = calculateProjectValuation({
+    expenses: [taggedItem1, taggedItem2, zeroTagItem],
+    categoryRates: { [baseItem.categoryName]: 5 },
+    tagRatesById: { 5: 15, 6: 0 },
+    areaSqm: 1000,
+  });
+
+  // taggedItem1 uses tag rate 15% => 230,000,000
+  assert.equal(val.items[0].rateSource, 'TAG');
+  assert.equal(val.items[0].effectivePercent, 15);
+  assert.ok(Math.abs(val.items[0].estimatedAmount - 230000000) < 0.01);
+
+  // taggedItem2 uses independent override 30% => 130,000,000
+  assert.equal(val.items[1].rateSource, 'INDEPENDENT');
+  assert.equal(val.items[1].effectivePercent, 30);
+  assert.equal(val.items[1].estimatedAmount, 130000000);
+
+  // zeroTagItem has tag percent 0 => falls back to category rate 5% => 105,000,000
+  assert.equal(val.items[2].rateSource, 'CATEGORY');
+  assert.equal(val.items[2].effectivePercent, 5);
+  assert.equal(val.items[2].estimatedAmount, 105000000);
+});
+
 
 

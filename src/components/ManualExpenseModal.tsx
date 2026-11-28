@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Sparkles, X } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import type { CategoryItem, ExpenseItem, ProjectCurrency } from '../types/app';
 import { getTodayJalali, normalizeDigits, parseJalaliDate } from '../utils/jalali';
 import { formatCurrencyValue, parseStrictNumericInput } from '../utils/pricing';
@@ -29,6 +30,7 @@ export function ManualExpenseModal({
   onClose,
   onSave,
 }: ManualExpenseModalProps) {
+  const { getAuthHeaders } = useAuth();
   const [categoryName, setCategoryName] = useState('');
   const [subcategory, setSubcategory] = useState('');
   const [dateJalali, setDateJalali] = useState('');
@@ -74,7 +76,11 @@ export function ManualExpenseModal({
     try {
       const res = await fetch('/api/ai/suggest-category', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders(),
+        },
         body: JSON.stringify({
           title: title.trim(),
           categoriesList: categories.map((c) => ({

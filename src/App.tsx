@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Building2,
+  ClipboardList,
   FolderKanban,
   GitCompare,
   HardDrive,
@@ -17,13 +18,16 @@ import {
 import { AuthProvider, useAuth, type AuthUser } from './context/AuthContext';
 import { WorkspaceProvider, useWorkspace } from './context/WorkspaceContext';
 import type { AppSection, ExpenseItem, Project } from './types/app';
+import { isDetailedExpense } from './utils/detailedExpense';
 import { DashboardView } from './components/DashboardView';
+import { DetailedExpensesView } from './components/DetailedExpensesView';
 import { ExpensesRatesView } from './components/ExpensesRatesView';
 import { VersionsView } from './components/VersionsView';
 import { CategoriesView } from './components/CategoriesView';
 import { ProjectsView } from './components/ProjectsView';
 import { ProjectFormModal } from './components/ProjectFormModal';
 import { ManualExpenseModal } from './components/ManualExpenseModal';
+import { DetailedExpenseModal } from './components/DetailedExpenseModal';
 import { ExcelImportModal } from './components/ExcelImportModal';
 import { NewVersionModal } from './components/NewVersionModal';
 
@@ -33,6 +37,7 @@ const NAV_ITEMS: Array<{
   icon: React.ComponentType<{ className?: string }>;
 }> = [
   { id: 'dashboard', label: 'داشبورد و گزارش‌ها', icon: LayoutDashboard },
+  { id: 'detailed', label: 'ثبت و گزارش جزئیات', icon: ClipboardList },
   { id: 'expenses', label: 'هزینه‌ها و نرخ‌ها', icon: ReceiptText },
   { id: 'versions', label: 'نسخه‌های قیمت‌گذاری', icon: GitCompare },
   { id: 'categories', label: 'دسته‌بندی هزینه‌ها', icon: FolderKanban },
@@ -70,6 +75,13 @@ function MainWorkspaceShell() {
     null
   );
 
+  const [detailedModalOpen, setDetailedModalOpen] = useState(false);
+  const [editingDetailedExpense, setEditingDetailedExpense] =
+    useState<ExpenseItem | null>(null);
+  const [defaultDetailedTagId, setDefaultDetailedTagId] = useState<
+    number | null
+  >(null);
+
   const [excelModalOpen, setExcelModalOpen] = useState(false);
   const [newVersionModalOpen, setNewVersionModalOpen] = useState(false);
 
@@ -88,13 +100,13 @@ function MainWorkspaceShell() {
         />
       )}
 
-      {/* RTL Sidebar */}
+      {/* RTL Sidebar (Non-scrolling fixed viewport rail on desktop) */}
       <aside
-        className={`fixed inset-y-0 right-0 z-40 flex w-68 flex-col border-l border-slate-200 bg-white transition-transform duration-200 lg:static lg:translate-x-0 ${
+        className={`fixed inset-y-0 right-0 z-40 flex w-68 flex-col overflow-y-auto border-l border-slate-200 bg-white transition-transform duration-200 lg:sticky lg:top-0 lg:h-dvh lg:shrink-0 lg:overflow-hidden lg:translate-x-0 ${
           mobileMenuOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3.5">
           <div className="text-base font-extrabold text-slate-900 whitespace-nowrap">
             سامانه برآورد ساخت
           </div>
@@ -109,7 +121,7 @@ function MainWorkspaceShell() {
         </div>
 
         {/* Active Project Selector */}
-        <div className="border-b border-slate-200 p-4">
+        <div className="shrink-0 border-b border-slate-200 p-3.5">
           <label
             htmlFor="sidebar-project-select"
             className="block text-[11px] font-semibold text-slate-500"
@@ -122,7 +134,7 @@ function MainWorkspaceShell() {
             onChange={(e) => {
               if (e.target.value) setActiveProjectId(Number(e.target.value));
             }}
-            className="mt-1.5 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-900 focus:border-sky-700 focus:outline-none"
+            className="mt-1.5 w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-900 focus:border-sky-700 focus:outline-none"
           >
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
@@ -145,7 +157,7 @@ function MainWorkspaceShell() {
         </div>
 
         {/* Navigation Links */}
-        <nav aria-label="منوی اصلی" className="flex-1 space-y-1 p-3">
+        <nav aria-label="منوی اصلی" className="flex-1 space-y-1 p-2.5">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const active = section === item.id;
@@ -154,7 +166,7 @@ function MainWorkspaceShell() {
                 key={item.id}
                 type="button"
                 onClick={() => handleNavClick(item.id)}
-                className={`flex w-full items-center gap-3 rounded-lg px-3.5 py-2.5 text-sm font-medium transition-colors whitespace-nowrap ${
+                className={`flex w-full items-center gap-3 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors whitespace-nowrap ${
                   active
                     ? 'bg-slate-900 text-white'
                     : 'text-slate-700 hover:bg-slate-100 hover:text-slate-950'
@@ -168,24 +180,24 @@ function MainWorkspaceShell() {
         </nav>
 
         {/* Storage Status & Builder Account */}
-        <div className="border-t border-slate-200 p-4 space-y-3 text-xs">
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1.5">
+        <div className="shrink-0 border-t border-slate-200 p-3 space-y-2.5 text-xs">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 space-y-1">
             <div className="flex items-center gap-1.5 font-semibold text-slate-800">
               <HardDrive className="h-3.5 w-3.5 text-slate-600" />
               <span>وضعیت ذخیره‌سازی</span>
             </div>
             {storageMode === 'cloud' && (
-              <p className="leading-5 text-emerald-800">
-                متصل به پایگاه داده؛ همهٔ اطلاعات به‌صورت خودکار ذخیره می‌شوند.
+              <p className="text-[11px] leading-4 text-emerald-800">
+                متصل به پایگاه داده؛ همهٔ اطلاعات خودکار ذخیره می‌شوند.
               </p>
             )}
             {storageMode === 'loading' && (
-              <p className="leading-5 text-slate-600">
+              <p className="text-[11px] leading-4 text-slate-600">
                 در حال بارگذاری اطلاعات پروژه...
               </p>
             )}
             {storageMode === 'error' && (
-              <p className="leading-5 text-red-700">
+              <p className="text-[11px] leading-4 text-red-700">
                 دسترسی به پایگاه داده با خطا روبه‌رو شد.
               </p>
             )}
@@ -238,14 +250,20 @@ function MainWorkspaceShell() {
             <button
               type="button"
               onClick={() => {
-                setEditingExpense(null);
-                setManualModalOpen(true);
+                if (section === 'detailed') {
+                  setEditingDetailedExpense(null);
+                  setDefaultDetailedTagId(null);
+                  setDetailedModalOpen(true);
+                } else {
+                  setEditingExpense(null);
+                  setManualModalOpen(true);
+                }
               }}
               disabled={!activeProject}
               className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap shrink-0"
             >
               <Plus className="h-4 w-4" />
-              ثبت هزینه
+              {section === 'detailed' ? 'ثبت هزینهٔ جزئی' : 'ثبت هزینه'}
             </button>
           </div>
         </header>
@@ -292,15 +310,42 @@ function MainWorkspaceShell() {
             />
           )}
 
+          {section === 'detailed' && (
+            <DetailedExpensesView
+              onOpenDetailedAdd={(tagId) => {
+                setEditingDetailedExpense(null);
+                setDefaultDetailedTagId(typeof tagId === 'number' ? tagId : null);
+                setDetailedModalOpen(true);
+              }}
+              onOpenDetailedEdit={(exp) => {
+                setEditingDetailedExpense(exp);
+                setDefaultDetailedTagId(null);
+                setDetailedModalOpen(true);
+              }}
+              onNavigate={setSection}
+            />
+          )}
+
           {section === 'expenses' && (
             <ExpensesRatesView
+              onOpenDetailedAdd={() => {
+                setEditingDetailedExpense(null);
+                setDefaultDetailedTagId(null);
+                setDetailedModalOpen(true);
+              }}
               onOpenManualAdd={() => {
                 setEditingExpense(null);
                 setManualModalOpen(true);
               }}
               onOpenManualEdit={(exp) => {
-                setEditingExpense(exp);
-                setManualModalOpen(true);
+                if (isDetailedExpense(exp)) {
+                  setEditingDetailedExpense(exp);
+                  setDefaultDetailedTagId(null);
+                  setDetailedModalOpen(true);
+                } else {
+                  setEditingExpense(exp);
+                  setManualModalOpen(true);
+                }
               }}
               onOpenExcelImport={() => setExcelModalOpen(true)}
               onOpenNewVersion={() => setNewVersionModalOpen(true)}
@@ -332,6 +377,10 @@ function MainWorkspaceShell() {
               onSelectAndOpenDashboard={(id) => {
                 setActiveProjectId(id);
                 setSection('dashboard');
+              }}
+              onSelectAndOpenDetailed={(id) => {
+                setActiveProjectId(id);
+                setSection('detailed');
               }}
             />
           )}
@@ -373,6 +422,32 @@ function MainWorkspaceShell() {
             });
           }
           return addExpenses([{ ...data, source: 'دستی' }], 'append');
+        }}
+      />
+
+      <DetailedExpenseModal
+        open={detailedModalOpen}
+        projectId={activeProjectId}
+        categories={projectCategories}
+        currency={activeProject?.currency ?? 'تعیین‌نشده'}
+        initialExpense={editingDetailedExpense}
+        initialTagId={defaultDetailedTagId}
+        onClose={() => {
+          setDetailedModalOpen(false);
+          setEditingDetailedExpense(null);
+          setDefaultDetailedTagId(null);
+        }}
+        onSave={async (data) => {
+          if (editingDetailedExpense) {
+            const matchedCat = projectCategories.find(
+              (c) => c.name === data.categoryName
+            );
+            return updateExpense(editingDetailedExpense.id, {
+              ...data,
+              categoryId: matchedCat?.id ?? null,
+            });
+          }
+          return addExpenses([{ ...data, source: 'جزئیات' }], 'append');
         }}
       />
 

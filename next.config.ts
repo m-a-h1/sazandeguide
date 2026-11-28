@@ -12,7 +12,7 @@ const nextConfig: NextConfig = {
   images: {
     unoptimized: true,
   },
-  serverExternalPackages: ['mongoose'],
+  serverExternalPackages: ['mongoose', '@aws-sdk/client-s3'],
   allowedDevOrigins: [
     '**.run.app',
     '**.us-west1.run.app',

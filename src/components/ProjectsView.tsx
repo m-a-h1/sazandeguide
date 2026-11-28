@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Building2, Check, Edit3, Plus, Trash2 } from 'lucide-react';
+import { Building2, Check, ClipboardList, Edit3, Plus, Trash2 } from 'lucide-react';
 import { useWorkspace } from '../context/WorkspaceContext';
 import type { Project } from '../types/app';
 import { formatJalaliDisplay } from '../utils/jalali';
@@ -16,12 +16,14 @@ interface ProjectsViewProps {
   onOpenNewProject: () => void;
   onOpenEditProject: (project: Project) => void;
   onSelectAndOpenDashboard: (projectId: number) => void;
+  onSelectAndOpenDetailed: (projectId: number) => void;
 }
 
 export function ProjectsView({
   onOpenNewProject,
   onOpenEditProject,
   onSelectAndOpenDashboard,
+  onSelectAndOpenDetailed,
 }: ProjectsViewProps) {
   const { projects, activeProjectId, deleteProject } = useWorkspace();
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
@@ -166,11 +168,19 @@ export function ProjectsView({
                 </div>
               </div>
 
-              <div className="mt-4 flex items-center justify-end gap-2">
+              <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => onSelectAndOpenDetailed(proj.id)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap shrink-0"
+                >
+                  <ClipboardList className="h-3.5 w-3.5" />
+                  ثبت و گزارش جزئیات
+                </button>
                 <button
                   type="button"
                   onClick={() => onSelectAndOpenDashboard(proj.id)}
-                  className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold whitespace-nowrap ${
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold whitespace-nowrap shrink-0 ${
                     isActive
                       ? 'bg-sky-800 text-white hover:bg-sky-900'
                       : 'border border-slate-300 bg-white text-slate-800 hover:bg-slate-50'
