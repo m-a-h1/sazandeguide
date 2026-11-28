@@ -3,7 +3,7 @@ import {
   deleteExpenseForProject,
   updateExpenseForProject,
 } from '../../../../../../db/projectsRepo';
-import { isKeyOwnedByProject } from '../../../../../../lib/s3';
+import { isKeyOwnedByProject } from '../../../../../../lib/projectImages';
 import {
   handleRouteError,
   parsePositiveIntId,

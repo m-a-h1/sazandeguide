@@ -1,293 +1,117 @@
-import crypto from 'node:crypto';
-import {
-  DeleteObjectCommand,
-  GetObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from '@aws-sdk/client-s3';
-import type { ExpenseImageAttachment } from '../types/app';
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { randomUUID } from "node:crypto";
 
-export const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+const bucketName = process.env.S3_BUCKET_NAME!;
+const s3Domain = process.env.S3_DOMAIN!;
+const domain = `https://${s3Domain}`;
+const baseUrl = `${domain}/${bucketName}`;
 
-export const ALLOWED_IMAGE_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-] as const;
+const signedUrlTTL = Number(process.env.SIGNED_URL_TTL_S || 3600);
 
-export type AllowedImageMime = (typeof ALLOWED_IMAGE_MIME_TYPES)[number];
+const s3 = new S3Client({
+  region: "default",
+  endpoint: domain,
+  forcePathStyle: true,
+  credentials: {
+    accessKeyId: process.env.S3_ACCESS_KEY!,
+    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+  },
+});
 
-export class S3ConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'S3ConfigError';
-  }
-}
-
-interface S3Config {
-  bucket: string;
-  region: string;
-  endpoint?: string;
-  forcePathStyle: boolean;
-  accessKeyId: string;
-  secretAccessKey: string;
-  publicBaseUrl?: string;
-}
-
-function readS3Config(): S3Config | null {
-  const bucket = process.env.S3_BUCKET?.trim();
-  const accessKeyId = process.env.S3_ACCESS_KEY_ID?.trim();
-  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY?.trim();
-
-  if (!bucket || !accessKeyId || !secretAccessKey) {
-    return null;
-  }
-
-  const endpointRaw = process.env.S3_ENDPOINT?.trim() || undefined;
-  let endpoint: string | undefined;
-  if (endpointRaw) {
-    try {
-      const parsed = new URL(endpointRaw);
-      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-        endpoint = parsed.toString().replace(/\/$/, '');
-      }
-    } catch {
-      endpoint = undefined;
-    }
-  }
-
-  const region = process.env.S3_REGION?.trim() || 'us-east-1';
-  const forcePathEnv = process.env.S3_FORCE_PATH_STYLE?.trim().toLowerCase();
-  const forcePathStyle =
-    forcePathEnv === 'true'
-      ? true
-      : forcePathEnv === 'false'
-        ? false
-        : Boolean(endpoint);
-
-  const publicBaseRaw = process.env.S3_PUBLIC_BASE_URL?.trim() || undefined;
-  let publicBaseUrl: string | undefined;
-  if (publicBaseRaw) {
-    try {
-      const parsed = new URL(publicBaseRaw);
-      if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-        publicBaseUrl = parsed.toString().replace(/\/$/, '');
-      }
-    } catch {
-      publicBaseUrl = undefined;
-    }
-  }
-
-  return {
-    bucket,
-    region,
-    endpoint,
-    forcePathStyle,
-    accessKeyId,
-    secretAccessKey,
-    publicBaseUrl,
+/**
+ * Get file extension from MIME type
+ * @param mimetype Image MIME type
+ */
+function getFileExtension(mimetype: string): string {
+  const extensionMap: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
   };
+  const extension = extensionMap[mimetype];
+  if (!extension) throw new Error("Unsupported image MIME type");
+  return extension;
 }
 
-export function isS3Configured(): boolean {
-  return readS3Config() !== null;
-}
-
-let cachedClient: S3Client | null = null;
-let cachedConfigHash = '';
-
-function getS3Client(): { client: S3Client; config: S3Config } {
-  const config = readS3Config();
-  if (!config) {
-    throw new S3ConfigError(
-      'اتصال فضای ذخیره‌سازی S3 پیکربندی نشده است. لطفاً متغیرهای S3_BUCKET، S3_ACCESS_KEY_ID و S3_SECRET_ACCESS_KEY (و در صورت نیاز S3_ENDPOINT و S3_REGION) را در تنظیمات محیط سرور وارد کنید.'
-    );
-  }
-
-  const hash = `${config.bucket}|${config.region}|${config.endpoint ?? ''}|${config.forcePathStyle}|${config.accessKeyId}`;
-  if (!cachedClient || cachedConfigHash !== hash) {
-    cachedClient = new S3Client({
-      region: config.region,
-      endpoint: config.endpoint,
-      forcePathStyle: config.forcePathStyle,
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
-    });
-    cachedConfigHash = hash;
-  }
-
-  return { client: cachedClient, config };
+export interface S3UploadResponse {
+  path: string; // S3 key (path only, no domain)
+  url: string; // Full URL including domain
+  size: number; // File size in bytes
 }
 
 /**
- * Inspects leading magic bytes to verify the upload is genuinely a JPEG, PNG, or WebP image.
+ * Upload file to S3 with organized path structure
+ * @param fileBuffer Buffer containing file data
+ * @param s3Path Organized image path
+ * @param mimetype Image MIME type
+ * @returns S3 upload response with path, URL, and size
  */
-export function detectImageMimeFromMagicBytes(
-  bytes: Uint8Array
-): AllowedImageMime | null {
-  if (!bytes || bytes.length < 12) return null;
+export const uploadFileToS3 = async (fileBuffer: Buffer, s3Path: string, mimetype: string = "image/webp", filenamePrefix = ""): Promise<S3UploadResponse> => {
+  const extension = getFileExtension(mimetype);
+  const timestamp = `${filenamePrefix}${new Date().getTime()}-${randomUUID()}`;
+  const key = process.env.NODE_ENV === "development" ? `dev/${s3Path}/${timestamp}.${extension}` : `${s3Path}/${timestamp}.${extension}`;
 
-  // JPEG: FF D8 FF
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-    return 'image/jpeg';
-  }
+  const params = {
+    Bucket: bucketName,
+    Body: fileBuffer,
+    Key: key,
+    ContentType: mimetype,
+  };
 
-  // PNG: 89 50 4E 47 0D 0A 1A 0A
-  if (
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47 &&
-    bytes[4] === 0x0d &&
-    bytes[5] === 0x0a &&
-    bytes[6] === 0x1a &&
-    bytes[7] === 0x0a
-  ) {
-    return 'image/png';
-  }
-
-  // WebP: RIFF....WEBP
-  if (
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
-  ) {
-    return 'image/webp';
-  }
-
-  return null;
-}
-
-export function mimeToExtension(mime: AllowedImageMime): string {
-  switch (mime) {
-    case 'image/jpeg':
-      return 'jpg';
-    case 'image/png':
-      return 'png';
-    case 'image/webp':
-      return 'webp';
-  }
-}
-
-export function buildProjectUploadKey(
-  projectId: number,
-  mime: AllowedImageMime
-): string {
-  const ext = mimeToExtension(mime);
-  return `projects/${projectId}/expenses/${crypto.randomUUID()}.${ext}`;
-}
-
-export function isKeyOwnedByProject(projectId: number, key: string): boolean {
-  if (!Number.isInteger(projectId) || projectId <= 0) return false;
-  if (typeof key !== 'string' || !key) return false;
-  if (key.includes('..') || key.startsWith('/') || key.includes('\\')) {
-    return false;
-  }
-  const prefix = `projects/${projectId}/expenses/`;
-  if (!key.startsWith(prefix)) return false;
-  const remainder = key.slice(prefix.length);
-  return /^[a-zA-Z0-9_-]+\.(jpg|jpeg|png|webp)$/.test(remainder);
-}
-
-export function buildProjectImageUrl(
-  projectId: number,
-  key: string,
-  publicBaseUrl?: string
-): string {
-  if (publicBaseUrl) {
-    return `${publicBaseUrl}/${key}`;
-  }
-  return `/api/projects/${projectId}/uploads?key=${encodeURIComponent(key)}`;
-}
-
-export async function uploadProjectImageToS3(params: {
-  projectId: number;
-  buffer: Buffer;
-  detectedMime: AllowedImageMime;
-  originalFileName: string;
-}): Promise<ExpenseImageAttachment> {
-  const { client, config } = getS3Client();
-  const key = buildProjectUploadKey(params.projectId, params.detectedMime);
-
-  await client.send(
-    new PutObjectCommand({
-      Bucket: config.bucket,
-      Key: key,
-      Body: params.buffer,
-      ContentType: params.detectedMime,
-      CacheControl: 'private, max-age=31536000',
-    })
-  );
-
-  const safeName =
-    params.originalFileName
-      .replace(/[/\\<>:"|?*\u0000-\u001f]/g, '_')
-      .trim()
-      .slice(0, 140) || `photo.${mimeToExtension(params.detectedMime)}`;
+  await s3.send(new PutObjectCommand(params));
 
   return {
-    key,
-    url: buildProjectImageUrl(params.projectId, key, config.publicBaseUrl),
-    fileName: safeName,
-    contentType: params.detectedMime,
-    size: params.buffer.byteLength,
-    uploadedAt: new Date().toISOString(),
+    path: key,
+    url: `${baseUrl}/${key}`,
+    size: fileBuffer.length,
   };
-}
+};
 
-export async function getProjectImageFromS3(
-  projectId: number,
-  key: string
-): Promise<{
-  bytes: Uint8Array;
-  contentType: string;
-} | null> {
-  if (!isKeyOwnedByProject(projectId, key)) {
-    return null;
-  }
-  const { client, config } = getS3Client();
-  const res = await client.send(
-    new GetObjectCommand({
-      Bucket: config.bucket,
-      Key: key,
-    })
+export const removeFileFromS3 = (filePath: string) =>
+  s3.send(
+    new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key: filePath,
+    }),
   );
 
-  if (!res.Body) return null;
-  const bytes = await res.Body.transformToByteArray();
-  const contentType =
-    typeof res.ContentType === 'string' &&
-    (ALLOWED_IMAGE_MIME_TYPES as readonly string[]).includes(res.ContentType)
-      ? res.ContentType
-      : 'application/octet-stream';
+export const removeManyFilesFromS3 = async (filePaths: string[]) => {
+  const promises = filePaths.map((path) => removeFileFromS3(path));
+  await Promise.all(promises);
+};
 
-  return { bytes, contentType };
+// sign key
+
+export async function signKey(key: string, expiresIn = signedUrlTTL): Promise<string> {
+  const command = new GetObjectCommand({
+    Bucket: process.env.S3_BUCKET_NAME!,
+    Key: key,
+  });
+
+  return getSignedUrl(s3, command, { expiresIn });
 }
 
-export async function deleteProjectImageFromS3(
-  projectId: number,
-  key: string
-): Promise<boolean> {
-  if (!isKeyOwnedByProject(projectId, key)) return false;
-  if (!isS3Configured()) return false;
-  try {
-    const { client, config } = getS3Client();
-    await client.send(
-      new DeleteObjectCommand({
-        Bucket: config.bucket,
-        Key: key,
-      })
-    );
-    return true;
-  } catch (err) {
-    console.error('S3 delete error (non-fatal):', err);
-    return false;
+/**
+ * Signs multiple keys in parallel with a concurrency limit.
+ * Avoids hammering S3 with hundreds of simultaneous requests.
+ */
+export async function signKeys(
+  keys: (string | undefined | null)[],
+  expiresIn = signedUrlTTL,
+  concurrency = 20,
+): Promise<(string | undefined)[]> {
+  const results: (string | undefined)[] = new Array(keys.length).fill(undefined);
+
+  // Process in chunks of `concurrency`
+  for (let i = 0; i < keys.length; i += concurrency) {
+    const chunk = keys.slice(i, i + concurrency);
+    const signed = await Promise.all(chunk.map((key) => (key ? signKey(key, expiresIn) : Promise.resolve(undefined))));
+    signed.forEach((url, j) => {
+      results[i + j] = url;
+    });
   }
+
+  return results;
 }

@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { assertBuilderOwnsProject } from '../../../../../db/projectsRepo';
+import { assertBuilderOwnsProject, getOwnedProjectName } from '../../../../../db/projectsRepo';
 import {
   deleteProjectImageFromS3,
   detectImageMimeFromMagicBytes,
-  getProjectImageFromS3,
+  getProjectImageUrl,
   isKeyOwnedByProject,
   isS3Configured,
   MAX_UPLOAD_SIZE_BYTES,
   S3ConfigError,
   uploadProjectImageToS3,
-} from '../../../../../lib/s3';
+} from '../../../../../lib/projectImages';
 import {
   handleRouteError,
   parsePositiveIntId,
@@ -68,21 +68,8 @@ export async function GET(
       );
     }
 
-    const fetched = await getProjectImageFromS3(projectId, key);
-    if (!fetched) {
-      return NextResponse.json(
-        { error: 'تصویر مورد نظر یافت نشد.' },
-        { status: 404 }
-      );
-    }
-
-    return new NextResponse(Buffer.from(fetched.bytes), {
-      status: 200,
-      headers: {
-        'Content-Type': fetched.contentType,
-        'X-Content-Type-Options': 'nosniff',
-        'Cache-Control': 'private, max-age=3600',
-      },
+    return NextResponse.redirect(await getProjectImageUrl(projectId, key), {
+      headers: { 'Cache-Control': 'private, no-store' },
     });
   } catch (error) {
     if (error instanceof S3ConfigError) {
@@ -116,8 +103,8 @@ export async function POST(
       );
     }
 
-    const owns = await assertBuilderOwnsProject(auth.dbUserId, projectId);
-    if (!owns) {
+    const projectName = await getOwnedProjectName(auth.dbUserId, projectId);
+    if (!projectName) {
       return NextResponse.json({ error: 'پروژه یافت نشد.' }, { status: 404 });
     }
 
@@ -125,7 +112,7 @@ export async function POST(
       return NextResponse.json(
         {
           error:
-            'فضای ذخیره‌سازی S3 هنوز پیکربندی نشده است. متغیرهای S3_BUCKET، S3_ACCESS_KEY_ID و S3_SECRET_ACCESS_KEY (و S3_ENDPOINT / S3_REGION در صورت نیاز) را در تنظیمات سرور ثبت کنید.',
+            'فضای ذخیره‌سازی S3 هنوز پیکربندی نشده است. متغیرهای S3_BUCKET_NAME، S3_DOMAIN، S3_ACCESS_KEY و S3_SECRET_ACCESS_KEY را در تنظیمات سرور ثبت کنید.',
         },
         { status: 503 }
       );
@@ -166,6 +153,8 @@ export async function POST(
 
     const image = await uploadProjectImageToS3({
       projectId,
+      builderName: auth.displayName || auth.username,
+      projectName,
       buffer,
       detectedMime,
       originalFileName: file.name || 'image',

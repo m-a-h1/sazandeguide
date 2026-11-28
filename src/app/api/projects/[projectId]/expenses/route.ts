@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createExpensesForProject } from '../../../../../db/projectsRepo';
-import { isKeyOwnedByProject } from '../../../../../lib/s3';
+import { isKeyOwnedByProject } from '../../../../../lib/projectImages';
 import {
   handleRouteError,
   parsePositiveIntId,

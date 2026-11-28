@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildProjectUploadKey,
+  buildProjectImagePath,
   detectImageMimeFromMagicBytes,
   isKeyOwnedByProject,
-} from './s3';
+} from './projectImages';
 
 test('detectImageMimeFromMagicBytes identifies JPEG, PNG, WebP and rejects HTML/SVG/text', () => {
   const jpeg = new Uint8Array([
@@ -30,9 +30,15 @@ test('detectImageMimeFromMagicBytes identifies JPEG, PNG, WebP and rejects HTML/
 });
 
 test('isKeyOwnedByProject enforces strict tenant scoping and blocks path traversal', () => {
-  const key = buildProjectUploadKey(42, 'image/jpeg');
+  const key = 'projects/42/expenses/example.jpg';
   assert.equal(isKeyOwnedByProject(42, key), true);
   assert.equal(isKeyOwnedByProject(43, key), false);
+  assert.equal(isKeyOwnedByProject(42, 'dev/projects/42/expenses/123-abc.webp'), true);
+  assert.equal(isKeyOwnedByProject(43, 'dev/projects/42/expenses/123-abc.webp'), false);
+  const namedKey = 'builders/سازنده/projects/پروژه/expenses/42-123-abcdef.jpg';
+  assert.equal(isKeyOwnedByProject(42, namedKey), true);
+  assert.equal(isKeyOwnedByProject(43, namedKey), false);
+  assert.equal(isKeyOwnedByProject(42, 'builders/../projects/project/expenses/42-123-abcdef.jpg'), false);
 
   assert.equal(
     isKeyOwnedByProject(42, 'projects/42/expenses/../../../etc/passwd'),
@@ -50,4 +56,9 @@ test('isKeyOwnedByProject enforces strict tenant scoping and blocks path travers
     isKeyOwnedByProject(42, 'projects/42/expenses/sub/file.jpg'),
     false
   );
+});
+
+test('buildProjectImagePath keeps names in safe path segments', () => {
+  assert.equal(buildProjectImagePath('سازنده', 'پروژه'), 'builders/سازنده/projects/پروژه/expenses');
+  assert.equal(buildProjectImagePath('../builder', 'project/test'), 'builders/.._builder/projects/project_test/expenses');
 });

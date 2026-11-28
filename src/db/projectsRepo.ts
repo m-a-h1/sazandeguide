@@ -1,6 +1,6 @@
 import { DEFAULT_CATEGORIES_TEMPLATE, PDF_SAMPLE_AUDIT_NOTE, PDF_SAMPLE_EXPENSES } from "../data/pdfSeed";
 import { connectToDatabase, DatabaseConfigError } from "../lib/mongodb";
-import { deleteProjectImageFromS3 } from "../lib/s3";
+import { deleteProjectImageFromS3 } from "../lib/projectImages";
 import { CategoryModel, type CategoryDoc } from "../models/Category";
 import { getNextSequence, getNextSequenceRange } from "../models/Counter";
 import { ExpenseModel, type ExpenseDoc } from "../models/Expense";
@@ -184,6 +184,16 @@ export async function assertBuilderOwnsProject(
     return Boolean(owned);
   } catch (error) {
     throw sanitizeDbError("assertBuilderOwnsProject", error);
+  }
+}
+
+export async function getOwnedProjectName(userId: number, projectId: number): Promise<string | null> {
+  try {
+    await connectToDatabase();
+    const project = await assertProjectOwnership(projectId, userId);
+    return project?.name ?? null;
+  } catch (error) {
+    throw sanitizeDbError("getOwnedProjectName", error);
   }
 }
 
